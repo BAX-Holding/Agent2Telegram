@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import threading
+import time
 from pathlib import Path
 
 from .config import Config
@@ -46,6 +47,7 @@ class AttachBridge:
         self._tpos = 0
         self._turn_active = threading.Event()
         self._turn_from_tg = False           # is the current transcript turn Telegram-originated?
+        self._last_activity = 0.0            # monotonic ts of last transcript activity (for typing)
 
     # ---- lifecycle ---------------------------------------------------------
     def run(self) -> None:
@@ -146,6 +148,7 @@ class AttachBridge:
 
     def _inject(self, text: str) -> None:
         self._turn_active.set()
+        self._last_activity = time.monotonic()   # keep typing lit from the very start
         try:
             self._session.inject(text)
         except Exception as e:
@@ -172,7 +175,7 @@ class AttachBridge:
             return
         if answer and self._owner_chat is not None:
             self.tg.send_message(self._owner_chat, answer)
-        self._turn_active.clear()
+            self._turn_active.clear()
 
     def _drain_transcript(self) -> None:
         if not self._transcript or not self._transcript.exists():
@@ -227,14 +230,21 @@ class AttachBridge:
             out = "\n".join(lines).strip()
             if out and self._owner_chat is not None:
                 self.tg.send_message(self._owner_chat, out)
-                self._turn_active.clear()
+        # Any new transcript content during a Telegram turn = the agent is still working;
+        # refresh activity so the typing indicator stays lit until the turn goes quiet.
+        if self._turn_from_tg:
+            self._last_activity = time.monotonic()
 
     # ---- typing indicator --------------------------------------------------
     def _typing_loop(self) -> None:
+        IDLE_DONE = 10.0   # turn is considered finished after this much transcript silence
         while not self._stop.is_set():
-            if self._turn_active.is_set() and self._owner_chat is not None:
-                self.tg.send_chat_action(self._owner_chat, "typing")
-            self._stop.wait(4)
+            if self._turn_active.is_set():
+                if time.monotonic() - self._last_activity > IDLE_DONE:
+                    self._turn_active.clear()                 # gone quiet → turn done, stop typing
+                elif self._owner_chat is not None:
+                    self.tg.send_chat_action(self._owner_chat, "typing")
+            self._stop.wait(3)
 
     # ---- media helpers (reuse the same download/STT as one-shot mode) ------
     def _transcribe(self, media: dict, chat_id: int) -> str | None:
