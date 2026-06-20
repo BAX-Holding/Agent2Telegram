@@ -54,12 +54,39 @@ class AttachBridge:
                  me.get("username"), self.cfg.tmux_session, self._owner_chat)
         if not self._session.alive:
             raise RuntimeError(f"tmux session '{self.cfg.tmux_session}' not found")
-        # Start tailing the transcript from its current end (don't replay history).
+        # Start tailing the transcript from its current end (don't replay history),
+        # but recover the current turn's origin so a restart mid-turn still forwards the rest.
         if self._transcript and self._transcript.exists():
             self._tpos = self._transcript.stat().st_size
+            self._detect_initial_origin()
         threading.Thread(target=self._outbound_loop, daemon=True).start()
         threading.Thread(target=self._typing_loop, daemon=True).start()
         self._inbound_loop()
+
+    def _detect_initial_origin(self) -> None:
+        """Recover whether the in-progress turn is Telegram-originated by scanning the tail
+        for the most recent non-empty user message (so a restart mid-turn keeps forwarding)."""
+        origin = self._origin.strip()
+        try:
+            with open(self._transcript, "rb") as f:
+                f.seek(max(0, self._tpos - 65536))
+                tail = f.read()
+        except OSError:
+            return
+        for raw in reversed(tail.split(b"\n")):
+            try:
+                rec = json.loads(raw.decode("utf-8", "ignore"))
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if rec.get("type") != "user":
+                continue
+            content = rec.get("message", {}).get("content")
+            utext = content if isinstance(content, str) else "\n".join(
+                b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+            ) if isinstance(content, list) else ""
+            if utext.strip():
+                self._turn_from_tg = utext.lstrip().startswith(origin) if origin else True
+                return
 
     # ---- inbound (Telegram → session) -------------------------------------
     def _inbound_loop(self) -> None:
