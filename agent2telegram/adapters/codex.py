@@ -17,5 +17,6 @@ class CodexAdapter(Adapter):
     label = "Codex"
     binary = "codex"
     default_command = ["codex", "exec", "{prompt}"]
-    # `codex exec --last` continues the most recent session in the working directory.
-    continue_command = ["codex", "exec", "--last", "{prompt}"]
+    # `resume` is a subcommand of `codex exec`; `--last` picks the most recent session.
+    # (Verified against `codex exec --help`.)
+    continue_command = ["codex", "exec", "resume", "--last", "{prompt}"]

@@ -54,6 +54,31 @@ curl -fsSL https://raw.githubusercontent.com/petrludwig-collab/Agent2Telegram/ma
 
 ---
 
+## Install with an agent (easiest for beginners, fresh server)
+
+If you already have **Codex** (or Claude Code) installed and logged in, you can let it do
+the whole install and fix any environment hiccups itself. The repo ships an
+[`AGENTS.md`](AGENTS.md) playbook the agent follows step by step.
+
+Three steps:
+1. **Install the agent CLI and log in** (the one genuinely manual part on a clean machine):
+   - Codex — <https://github.com/openai/codex>, then run `codex` once to sign in.
+   - or Claude Code — <https://docs.claude.com/claude-code>, then run `claude` once.
+2. **Have a Telegram bot token ready** (create a bot with [@BotFather](https://t.me/BotFather)).
+3. **Paste this prompt** into your agent:
+
+   > Install **Agent2Telegram** from `https://github.com/petrludwig-collab/Agent2Telegram`
+   > by following its `AGENTS.md` exactly. Connect it to **me on Telegram**. Ask me for the
+   > bot token and my Telegram user id when you need them. Do not weaken the security rules.
+   > When finished, verify with `python3 -m agent2telegram doctor` and confirm I get a reply
+   > from the bot.
+
+The agent reads `AGENTS.md`, checks prerequisites, installs, configures, verifies with
+`doctor`, and sets up auto‑start. Because the package is dependency‑free and self‑diagnosing,
+the agent has an easy, checkable job — and can repair the rare clean‑server quirk on its own.
+
+> Prefer a deterministic install with no agent? Use the **Quick start** above or the one‑liner.
+
 ## Prerequisites
 
 - **Python 3.10+**

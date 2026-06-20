@@ -13,7 +13,7 @@ import sys
 import time
 
 from . import adapters
-from .config import Config, save, config_path
+from .config import Config, save
 from .telegram import TelegramClient, TelegramError
 
 

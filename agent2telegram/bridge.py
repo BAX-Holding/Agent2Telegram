@@ -47,7 +47,8 @@ class Bridge:
         self._workers: dict[int, "_ChatWorker"] = {}
         self._workers_lock = threading.Lock()
         self._offset_file = _state_dir() / "offset"
-        self._started_chats: set[int] = set()   # which chats already have a live conversation
+        # Continuity is tracked on disk (a marker per chat dir), so it survives a restart
+        # and a fresh conversation resumes correctly instead of starting over.
 
     # ---- lifecycle ---------------------------------------------------------
     def run(self) -> None:
@@ -154,23 +155,54 @@ class Bridge:
 
     def _reset_chat(self, chat_id: int) -> None:
         import shutil
-        self._started_chats.discard(chat_id)
         d = self.chat_dir(chat_id)
         if d.exists():
             shutil.rmtree(d, ignore_errors=True)
 
+    @staticmethod
+    def _marker(chat_dir: Path) -> Path:
+        return chat_dir / ".a2t_started"
+
     def process(self, chat_id: int, text: str) -> None:
         """Run the agent for one message and reply. Runs inside a chat worker thread."""
-        self.tg.send_chat_action(chat_id, "typing")
-        is_cont = chat_id in self._started_chats
+        chat_dir = self.chat_dir(chat_id)
+        # Continue an existing conversation only after a *successful* first turn (marker).
+        is_cont = self._marker(chat_dir).exists()
+        with self._keep_typing(chat_id):
+            try:
+                reply = self.adapter.run(text, chat_dir=chat_dir, is_continuation=is_cont)
+            except Exception as e:
+                log.error("agent run failed for chat %s: %s", chat_id, e)
+                self.tg.send_message(chat_id, f"⚠️ Agent error: {e}")
+                return
         try:
-            reply = self.adapter.run(text, chat_dir=self.chat_dir(chat_id), is_continuation=is_cont)
-            self._started_chats.add(chat_id)
-        except Exception as e:
-            log.error("agent run failed for chat %s: %s", chat_id, e)
-            self.tg.send_message(chat_id, f"⚠️ Agent error: {e}")
-            return
+            self._marker(chat_dir).touch()
+        except OSError:
+            pass
         self.tg.send_message(chat_id, reply or "(the agent returned no output)")
+
+    def _keep_typing(self, chat_id: int):
+        """Context manager that keeps the Telegram 'typing…' indicator alive for the
+        whole agent run (it otherwise expires after ~5s)."""
+        bridge = self
+
+        class _Typing:
+            def __enter__(self):
+                self._stop = threading.Event()
+                self._t = threading.Thread(target=self._loop, daemon=True)
+                self._t.start()
+                return self
+
+            def _loop(self):
+                while not self._stop.is_set():
+                    bridge.tg.send_chat_action(chat_id, "typing")
+                    self._stop.wait(4)
+
+            def __exit__(self, *exc):
+                self._stop.set()
+                self._t.join(timeout=1)
+
+        return _Typing()
 
     # ---- offset persistence ------------------------------------------------
     def _load_offset(self) -> int:

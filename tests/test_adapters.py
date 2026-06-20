@@ -22,6 +22,12 @@ class AdapterArgvTests(unittest.TestCase):
         self.assertIn("--continue", argv)
         self.assertIn("again", argv)
 
+    def test_codex_continuation_uses_resume_subcommand(self):
+        a = CodexAdapter()
+        argv = a.build_argv("again", is_continuation=True)
+        self.assertEqual(argv[:4], ["codex", "exec", "resume", "--last"])
+        self.assertIn("again", argv)
+
     def test_prompt_with_spaces_is_a_single_argv_token(self):
         # Critical: the message must be ONE argv element (no shell, no injection).
         a = CodexAdapter()
