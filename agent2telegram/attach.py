@@ -42,9 +42,10 @@ class AttachBridge:
         self._session = TmuxSession([], name=cfg.tmux_session, cwd=Path.home(),
                                     origin_prefix=cfg.origin_prefix, boot_wait=0)
         self._stop = threading.Event()
-        self._sent_marker_keys: set = set()
+        self._sent_keys: set = set()
         self._tpos = 0
         self._turn_active = threading.Event()
+        self._turn_from_tg = False           # is the current transcript turn Telegram-originated?
 
     # ---- lifecycle ---------------------------------------------------------
     def run(self) -> None:
@@ -162,6 +163,7 @@ class AttachBridge:
         if nl == -1:
             return
         self._tpos += nl + 1
+        origin = self._origin.strip()
         for raw in chunk[:nl].split(b"\n"):
             line = raw.decode("utf-8", "ignore").strip()
             if not line:
@@ -170,21 +172,32 @@ class AttachBridge:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if rec.get("type") != "assistant":
+            typ = rec.get("type")
+            content = rec.get("message", {}).get("content")
+            if typ == "user":
+                # New turn — remember if it came from Telegram, so we forward EVERY progress
+                # message of this turn (terminal-originated turns stay local).
+                utext = content if isinstance(content, str) else "\n".join(
+                    b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+                ) if isinstance(content, list) else ""
+                if utext.strip():
+                    self._turn_from_tg = utext.lstrip().startswith(origin) if origin else True
+                continue
+            if typ != "assistant" or not self._turn_from_tg:
+                continue
+            text = "\n".join(
+                b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+            ).strip() if isinstance(content, list) else ""
+            if not text:
                 continue
             uuid = rec.get("uuid", "")
-            if uuid in self._sent_marker_keys:
+            if uuid in self._sent_keys:
                 continue
-            text = "\n".join(b.get("text", "") for b in rec.get("message", {}).get("content", [])
-                             if b.get("type") == "text")
+            self._sent_keys.add(uuid)
             lines = text.splitlines()
-            idx = next((i for i, ln in enumerate(lines) if ln.lstrip().startswith(self._marker)), None)
-            if idx is None:
-                continue
-            self._sent_marker_keys.add(uuid)
-            body = lines[idx:]
-            body[0] = body[0].lstrip()[len(self._marker):].lstrip()   # strip the marker
-            out = "\n".join(body).strip()
+            if lines and lines[0].lstrip().startswith(self._marker):
+                lines[0] = lines[0].lstrip()[len(self._marker):].lstrip()   # strip internal cue
+            out = "\n".join(lines).strip()
             if out and self._owner_chat is not None:
                 self.tg.send_message(self._owner_chat, out)
                 self._turn_active.clear()
