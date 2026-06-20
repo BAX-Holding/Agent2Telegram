@@ -70,12 +70,16 @@ def _extract_tui_tools(pane: str) -> list:
         if "Searching the web" in s:
             out.append("🔎 Searching the web")
             continue
-        if s.startswith("└"):
-            body = s.lstrip("└ ").strip()
-            verb = body.split(" ", 1)[0]
-            if verb in _TUI_VERBS:
-                rest = body[len(verb):].strip()
-                out.append(f"{_TUI_VERBS[verb]} {verb} {_short(rest)}".rstrip())
+        # Codex prints the call on a bullet line ("● Ran df -h /", "● Read foo.py") and its
+        # output nested under "└ …". Strip any leading bullet/branch markers so we catch the
+        # verb on either line; the verb whitelist keeps plain agent text (other words) out.
+        body = s.lstrip("└├│•●▪▸·*- \t")
+        if not body:
+            continue
+        verb = body.split(" ", 1)[0]
+        if verb in _TUI_VERBS:
+            rest = body[len(verb):].strip()
+            out.append(f"{_TUI_VERBS[verb]} {verb} {_short(rest)}".rstrip())
     return out
 
 
