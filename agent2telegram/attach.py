@@ -14,15 +14,15 @@ This keeps the agent's full session (context, persona, tools) and adds Telegram 
 """
 from __future__ import annotations
 
+import glob
 import html
 import json
 import logging
-import os
 import threading
 import time
-import urllib.parse
 from pathlib import Path
 
+from . import readers
 from .config import Config
 from .session import TmuxSession
 from .telegram import TelegramClient
@@ -33,39 +33,11 @@ log = logging.getLogger("agent2telegram.attach")
 #: the Stop-hook turn-end marker never arrives. The marker is the primary, precise signal —
 #: this just stops "typing…" from hanging forever if the hook is missing/misconfigured.
 IDLE_DONE = 90.0
-#: How often we re-assert the "typing…" chat action (Telegram shows it for ~5s).
-TYPING_INTERVAL = 2.0
+#: How often we re-assert the "typing…" chat action (Telegram shows it for ~5s). Kept well
+#: under that window so a turn never shows a gap, even right after a sent message clears it.
+TYPING_INTERVAL = 1.5
 
 
-def _short(s: str, n: int = 58) -> str:
-    s = " ".join(str(s).split()).replace("**", "").replace("`", "")
-    return s if len(s) <= n else s[:n - 1] + "…"
-
-
-def _tool_summary(name: str, inp: dict) -> str:
-    """A short human line describing a tool call, for the live status bubble."""
-    inp = inp if isinstance(inp, dict) else {}
-    if name == "Bash":
-        return "🛠️ " + _short(inp.get("description") or inp.get("command", "command"))
-    if name == "Read":
-        return "📄 Reading " + _short(os.path.basename(inp.get("file_path", "")) or "file")
-    if name in ("Edit", "Write", "NotebookEdit"):
-        return "✏️ Editing " + _short(os.path.basename(inp.get("file_path", "")) or "file")
-    if name in ("Grep", "Glob"):
-        return "🔎 Searching " + _short(inp.get("pattern", ""))
-    if name == "WebFetch":
-        try:
-            host = urllib.parse.urlparse(inp.get("url", "")).netloc or inp.get("url", "")
-        except Exception:
-            host = inp.get("url", "")
-        return "🌐 Web " + _short(host)
-    if name == "WebSearch":
-        return "🔎 Web search: " + _short(inp.get("query", ""))
-    if name in ("Agent", "Task"):
-        return "🤖 " + _short(inp.get("description") or "subagent")
-    if name.startswith("mcp__"):
-        return "🔌 " + _short(name.replace("mcp__", "").replace("__", " "))
-    return "🛠️ " + _short(name or "tool")
 
 
 class AttachBridge:
@@ -77,6 +49,9 @@ class AttachBridge:
         self._allowed = set(cfg.allowed_user_ids)
         self._marker = cfg.progress_marker
         self._origin = cfg.origin_prefix
+        # The reader knows the agent's transcript format and turns it into a common event stream.
+        self._reader = readers.for_agent(cfg.agent)
+        self._pending_turn_end = False       # set when the reader signals end-of-turn (Codex)
         # Accept the configured prefix plus the legacy "Telegram:" one, so a prefix change
         # mid-conversation doesn't drop the turn in flight.
         self._origins = tuple({p for p in (cfg.origin_prefix.strip(), "Telegram:", "[TG]") if p})
@@ -84,8 +59,13 @@ class AttachBridge:
         self._signal = Path(cfg.signal_file) if cfg.signal_file else None
         # Precise end-of-turn marker written by the agent's Stop hook; lets "typing…" stay lit
         # continuously through long thinking/tool runs and switch off exactly when the turn ends.
+        # Claude Code only: end-of-turn marker its Stop hook writes. Codex has no hook — its
+        # rollout log records task_complete, so the reader signals turn end directly.
         self._turn_end = (self._signal.parent / "turn_end") if self._signal else None
-        self._transcript = Path(cfg.transcript_path) if cfg.transcript_path else None
+        # Codex writes a fresh rollout-*.jsonl per session under ~/.codex/sessions; auto-detect
+        # the newest one (and re-detect if the session restarts). Claude Code uses a fixed path.
+        self._transcript = self._resolve_transcript()
+        self._last_resolve = 0.0
         self._session = TmuxSession([], name=cfg.tmux_session, cwd=Path.home(),
                                     origin_prefix=cfg.origin_prefix, boot_wait=0)
         self._stop = threading.Event()
@@ -101,7 +81,6 @@ class AttachBridge:
         self._turn_from_tg = False           # is the current transcript turn Telegram-originated?
         self._last_activity = 0.0            # monotonic ts of last transcript activity (for typing)
         self._status = {"mid": None, "shown": ""}   # live one-line tool-call status bubble
-        self._poke_pending = False                   # re-assert typing on next tick (after end-check)
         self._last_typing = 0.0                      # monotonic ts of last "typing…" chat action
         self._typing_count = 0                       # diagnostics: typing actions in current turn
         self._turn_started = 0.0                     # diagnostics: monotonic ts of turn start
@@ -110,6 +89,51 @@ class AttachBridge:
         # would otherwise leave behind in the chat.
         self._status_path = (self._signal.parent / "status_bubble") if self._signal else None
         self._seen_tools: set = set()
+
+    # ---- transcript resolution --------------------------------------------
+    def _codex_sessions_dir(self) -> Path:
+        tp = (self.cfg.transcript_path or "").strip()
+        if tp and tp.lower() != "auto":
+            p = Path(tp).expanduser()
+            if p.is_dir():
+                return p
+        return Path.home() / ".codex" / "sessions"
+
+    def _newest_rollout(self) -> Path | None:
+        base = self._codex_sessions_dir()
+        files = glob.glob(str(base / "**" / "rollout-*.jsonl"), recursive=True) \
+            or glob.glob(str(base / "**" / "*.jsonl"), recursive=True)
+        if not files:
+            return None
+        try:
+            return Path(max(files, key=lambda f: Path(f).stat().st_mtime))
+        except OSError:
+            return None
+
+    def _resolve_transcript(self) -> Path | None:
+        if self.cfg.agent != "codex":
+            return Path(self.cfg.transcript_path) if self.cfg.transcript_path else None
+        tp = (self.cfg.transcript_path or "").strip()
+        if tp and tp.lower() != "auto":
+            p = Path(tp).expanduser()
+            if p.is_file():
+                return p           # explicit rollout file
+        return self._newest_rollout()
+
+    def _maybe_reresolve_codex(self) -> None:
+        """If Codex started a new session (newer rollout file), follow it from its start."""
+        if self.cfg.agent != "codex":
+            return
+        now = time.monotonic()
+        if now - self._last_resolve < 5.0:
+            return
+        self._last_resolve = now
+        newest = self._newest_rollout()
+        if newest and newest != self._transcript:
+            log.info("Codex session switched → %s", newest.name)
+            self._transcript = newest
+            self._tpos = 0
+            self._resume_position()
 
     # ---- lifecycle ---------------------------------------------------------
     def run(self) -> None:
@@ -125,9 +149,9 @@ class AttachBridge:
             self._tpos = self._transcript.stat().st_size
             self._resume_position()
         self._cleanup_orphan_status()       # remove a bubble orphaned by a prior crash/restart
-        # Typing is driven entirely from the outbound loop (after the end-of-turn check) — no
-        # separate thread — so no "typing…" action can fire after the turn has ended.
+        # Typing runs in its own thread so a flood-control sleep in the send path never starves it.
         threading.Thread(target=self._outbound_loop, daemon=True).start()
+        threading.Thread(target=self._typing_loop, daemon=True).start()
         self._inbound_loop()
 
     def _resume_position(self) -> None:
@@ -153,13 +177,8 @@ class AttachBridge:
                 rec = json.loads(raw.decode("utf-8", "ignore"))
             except (json.JSONDecodeError, ValueError):
                 continue
-            if rec.get("type") != "user":
-                continue
-            content = rec.get("message", {}).get("content")
-            utext = content if isinstance(content, str) else "\n".join(
-                b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
-            ) if isinstance(content, list) else ""
-            if utext.strip():
+            utext = self._reader.user_text(rec)
+            if utext and utext.strip():
                 from_tg = utext.lstrip().startswith(self._origins)
                 last_user_end = min(line_end, size)
         if last_user_end is not None:
@@ -256,23 +275,23 @@ class AttachBridge:
             log.error("inject failed: %s", e)
             self._turn_active.clear()
 
-    def _keep_typing(self) -> None:
-        """Assert "typing…" when due — called from the outbound loop AFTER the end-of-turn check,
-        so it never fires once the turn has ended. Fires immediately when a message/edit was just
-        sent (``_poke_pending``) to close the gap a send leaves, otherwise as a steady keepalive
-        every TYPING_INTERVAL (well under Telegram's ~5s display window → no visible gap)."""
-        if not (self._turn_active.is_set() and self._owner_chat is not None):
-            self._poke_pending = False
-            return
-        now = time.monotonic()
-        if self._poke_pending or now - self._last_typing >= TYPING_INTERVAL:
-            gap = now - self._last_typing
-            if gap > self._max_gap:
-                self._max_gap = gap
-            self.tg.send_chat_action(self._owner_chat, "typing")
-            self._last_typing = now
-            self._typing_count += 1
-        self._poke_pending = False
+    def _typing_loop(self) -> None:
+        """Dedicated thread: assert "typing…" every TYPING_INTERVAL while a turn is active.
+
+        It runs independently of the outbound/send loop, so a flood-control sleep in the send path
+        (which happens during a burst of messages) can never starve the indicator — that was the
+        cause of mid-turn typing gaps. It stops the instant the turn ends (turn_active cleared), so
+        no action fires after the final message and typing stops with it (bar Telegram's ~5s decay)."""
+        while not self._stop.is_set():
+            if self._turn_active.is_set() and self._owner_chat is not None:
+                now = time.monotonic()
+                gap = now - self._last_typing
+                if gap > self._max_gap:
+                    self._max_gap = gap
+                self.tg.send_chat_action(self._owner_chat, "typing")
+                self._last_typing = now
+                self._typing_count += 1
+            self._stop.wait(TYPING_INTERVAL)
 
     def _consume_turn_end(self) -> None:
         if self._turn_end is not None:
@@ -281,40 +300,42 @@ class AttachBridge:
             except OSError:
                 pass
 
-    def _end_turn(self) -> None:
-        """Finish the current turn: drop the technical bubble and stop the typing indicator."""
-        self._drain_transcript()          # catch anything written just before the Stop hook fired
+    def _finish_turn(self) -> None:
+        """Drop the technical bubble and stop the typing indicator at the real end of a turn."""
         self._status_clear()
         was_active = self._turn_active.is_set()
         self._turn_active.clear()
-        self._poke_pending = False        # ensure no queued poke fires after the turn ended
+        self._pending_turn_end = False
         self._consume_turn_end()
         if was_active:
             log.info("TURN END t=%.2f dur=%.1fs typing_fired=%d max_gap=%.2fs",
                      time.time(), time.monotonic() - self._turn_started,
                      self._typing_count, self._max_gap)
 
+    def _end_turn(self) -> None:
+        # Claude Stop-hook path: catch anything written just before the hook fired, then finish.
+        self._drain_transcript()
+        self._finish_turn()
+
     # ---- outbound (session → Telegram) ------------------------------------
     def _outbound_loop(self) -> None:
         while not self._stop.is_set():
             try:
-                self._drain_transcript()
+                self._maybe_reresolve_codex()
+                self._drain_transcript()      # may set _pending_turn_end (Codex task_complete)
                 self._drain_signal()
-                # Primary signal: the Stop hook wrote the end-of-turn marker → end the turn,
-                # so "typing…" and the technical bubble track the real turn boundary. This is
-                # authoritative and runs even if turn_active wasn't set (e.g. a restart mid-turn,
-                # which is exactly when a stale bubble would otherwise be orphaned).
-                if self._turn_end is not None and self._turn_end.exists():
+                # End-of-turn detection, in priority order:
+                #   * Codex: the reader saw task_complete → end now (no hook needed).
+                #   * Claude Code: the Stop hook wrote the end-of-turn marker. Authoritative even
+                #     if turn_active is unset (e.g. a restart mid-turn that would orphan a bubble).
+                #   * Fallback: force-end if the transcript went quiet too long (hook missing).
+                if self._pending_turn_end:
+                    self._finish_turn()
+                elif self._turn_end is not None and self._turn_end.exists():
                     self._end_turn()
-                # Fallback: force-end if the transcript went quiet for too long (hook missing).
                 elif self._turn_active.is_set() and time.monotonic() - self._last_activity > IDLE_DONE:
                     self._status_clear()
                     self._turn_active.clear()
-                # Typing runs AFTER the end-of-turn check: the final message is followed right
-                # away by the turn-end marker, so by here turn_active is already cleared and no
-                # "typing…" fires after it — typing stops with the last message. Mid-turn it
-                # re-asserts on every send and as a steady keepalive, so there's never a gap.
-                self._keep_typing()
             except Exception as e:
                 log.error("outbound error: %s", e)
             self._stop.wait(0.4)
@@ -333,11 +354,9 @@ class AttachBridge:
                 self._status["mid"] = mid
                 self._status["shown"] = line
                 self._persist_status(mid)
-                self._poke_pending = True   # creating the bubble is a send → re-show typing next tick
         else:
             self.tg.edit_plain(self._owner_chat, self._status["mid"], body, parse_mode="HTML")
             self._status["shown"] = line
-            self._poke_pending = True   # an edit can clear typing too → re-assert next tick
 
     def _status_clear(self) -> None:
         if self._status["mid"] is not None and self._owner_chat is not None:
@@ -409,51 +428,46 @@ class AttachBridge:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            typ = rec.get("type")
-            content = rec.get("message", {}).get("content")
-            if typ == "user":
-                # New turn — remember if it came from Telegram, so we forward EVERY progress
-                # message of this turn (terminal-originated turns stay local).
-                utext = content if isinstance(content, str) else "\n".join(
-                    b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
-                ) if isinstance(content, list) else ""
-                if utext.strip():
-                    self._turn_from_tg = utext.lstrip().startswith(self._origins)
-                continue
-            if typ != "assistant" or not self._turn_from_tg:
-                continue
-            blocks = content if isinstance(content, list) else []
-            # 1) Text → a kept progress/final message. Posting it first DELETES the live
-            #    technical bubble (the tool steps that led here are done) — exactly as asked.
-            text = "\n".join(b.get("text", "") for b in blocks
-                             if isinstance(b, dict) and b.get("type") == "text").strip()
-            uuid = rec.get("uuid", "")
-            if text:
-                lines = text.splitlines()
-                if lines and lines[0].lstrip().startswith(self._marker):
-                    lines[0] = lines[0].lstrip()[len(self._marker):].lstrip()   # strip internal cue
-                out = "\n".join(lines).strip()
-                if out and self._owner_chat is not None and uuid not in self._sent_keys:
-                    self._mark_sent(uuid)                # ledger dedups across restarts
-                    # A new progress message → delete the current technical bubble so the next
-                    # tool calls re-create it BELOW this message (the bubble always trails at the
-                    # bottom). Between two progress messages a run of tools edits one bubble in
-                    # place (no per-tool flicker); it's only removed when content appears or at end.
-                    self._status_clear()
-                    self.tg.send_message(self._owner_chat, out)
-                    self._poke_pending = True            # re-show typing next tick — unless this
-                                                         # was the final message (turn-end follows)
-            # 2) Tool calls AFTER the text → a fresh live status bubble for the next steps.
-            for b in blocks:
-                if isinstance(b, dict) and b.get("type") == "tool_use":
-                    tid = b.get("id")
-                    if tid and tid not in self._seen_tools:
-                        self._seen_tools.add(tid)
-                        self._status_push(_tool_summary(b.get("name", ""), b.get("input")))
+            for ev in self._reader.parse(rec):
+                self._handle_event(ev)
         # Any new transcript content during a Telegram turn = the agent is still working;
-        # refresh activity so the typing indicator stays lit until the turn goes quiet.
+        # refresh activity so the idle fallback doesn't fire prematurely.
         if self._turn_from_tg:
             self._last_activity = time.monotonic()
+
+    def _strip_marker(self, text: str) -> str:
+        """Remove a leading progress marker (e.g. ``[TG]``) from the first line, if present."""
+        lines = text.splitlines()
+        if lines and lines[0].lstrip().startswith(self._marker):
+            lines[0] = lines[0].lstrip()[len(self._marker):].lstrip()
+        return "\n".join(lines).strip()
+
+    def _handle_event(self, ev) -> None:
+        """Apply one normalized reader event to the Telegram side."""
+        if ev.kind == "user":
+            # Remember whether this turn came from Telegram (origin prefix) — only those are
+            # forwarded; terminal-originated turns stay local.
+            self._turn_from_tg = ev.text.lstrip().startswith(self._origins)
+            return
+        if ev.kind == "turn_start":
+            return                              # inbound already lit typing; nothing else to do
+        if ev.kind == "turn_end":
+            self._pending_turn_end = True       # outbound loop finishes the turn after this drain
+            return
+        if not self._turn_from_tg or self._owner_chat is None:
+            return
+        if ev.kind == "text":
+            out = self._strip_marker(ev.text)
+            if out and ev.key not in self._sent_keys:
+                self._mark_sent(ev.key)         # ledger dedups across restarts
+                # A new progress message → delete the current technical bubble so the next tool
+                # calls re-create it BELOW this message (the bubble always trails at the bottom).
+                self._status_clear()
+                self.tg.send_message(self._owner_chat, out)
+        elif ev.kind == "tool":
+            if ev.key and ev.key not in self._seen_tools:
+                self._seen_tools.add(ev.key)
+                self._status_push(ev.text)
 
     # ---- media helpers (reuse the same download/STT as one-shot mode) ------
     def _transcribe(self, media: dict, chat_id: int) -> str | None:
@@ -484,7 +498,7 @@ class AttachBridge:
         except Exception:
             self.tg.send_message(chat_id, "⚠️ Couldn't download the attachment.")
             return ""
-        name = re.sub(r"[^A-Za-z0-9._-]+", "_", os.path.basename(default)) or "file"
+        name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(default).name) or "file"
         if "." not in name and (ext := Path(fp).suffix):
             name += ext
         d = Path.home() / ".local/state/agent2telegram/attachments"
