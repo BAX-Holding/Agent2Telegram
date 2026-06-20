@@ -82,7 +82,13 @@ class AttachBridge:
         self._session = TmuxSession([], name=cfg.tmux_session, cwd=Path.home(),
                                     origin_prefix=cfg.origin_prefix, boot_wait=0)
         self._stop = threading.Event()
-        self._sent_keys: set = set()
+        # Persisted ledger of already-forwarded message uuids — survives restarts/crashes/reboots
+        # so resuming an interrupted turn never re-sends what was already delivered.
+        self._sent_path = Path.home() / ".config" / "agent2telegram" / "attach_sent.txt"
+        try:
+            self._sent_keys: set = set(self._sent_path.read_text("utf-8").split())
+        except OSError:
+            self._sent_keys = set()
         self._tpos = 0
         self._turn_active = threading.Event()
         self._turn_from_tg = False           # is the current transcript turn Telegram-originated?
@@ -97,25 +103,35 @@ class AttachBridge:
                  me.get("username"), self.cfg.tmux_session, self._owner_chat)
         if not self._session.alive:
             raise RuntimeError(f"tmux session '{self.cfg.tmux_session}' not found")
-        # Start tailing the transcript from its current end (don't replay history),
-        # but recover the current turn's origin so a restart mid-turn still forwards the rest.
+        # Resume at the start of the current turn (right after the last user message) rather
+        # than at EOF, so a reply written while we were restarting still gets forwarded. The
+        # persisted ledger dedups, so already-delivered progress/final messages aren't re-sent.
         if self._transcript and self._transcript.exists():
             self._tpos = self._transcript.stat().st_size
-            self._detect_initial_origin()
+            self._resume_position()
         threading.Thread(target=self._outbound_loop, daemon=True).start()
         threading.Thread(target=self._typing_loop, daemon=True).start()
         self._inbound_loop()
 
-    def _detect_initial_origin(self) -> None:
-        """Recover whether the in-progress turn is Telegram-originated by scanning the tail
-        for the most recent non-empty user message (so a restart mid-turn keeps forwarding)."""
+    def _resume_position(self) -> None:
+        """Find the most recent non-empty user message and rewind ``_tpos`` to just after it,
+        so the current turn's assistant messages are re-read on startup. Combined with the
+        persisted ledger this re-delivers a reply that was written while we were down, without
+        re-sending anything already delivered. Also recovers the turn's Telegram origin."""
+        size = self._tpos
+        start = max(0, size - 5_000_000)        # large window: tool outputs can be big
         try:
             with open(self._transcript, "rb") as f:
-                f.seek(max(0, self._tpos - 5_000_000))   # large window: tool outputs can be big
+                f.seek(start)
                 tail = f.read()
         except OSError:
             return
-        for raw in reversed(tail.split(b"\n")):
+        pos = start
+        last_user_end = None
+        from_tg = self._turn_from_tg
+        for raw in tail.split(b"\n"):
+            line_end = pos + len(raw) + 1       # +1 for the newline separator
+            pos = line_end
             try:
                 rec = json.loads(raw.decode("utf-8", "ignore"))
             except (json.JSONDecodeError, ValueError):
@@ -127,8 +143,23 @@ class AttachBridge:
                 b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
             ) if isinstance(content, list) else ""
             if utext.strip():
-                self._turn_from_tg = utext.lstrip().startswith(self._origins)
-                return
+                from_tg = utext.lstrip().startswith(self._origins)
+                last_user_end = min(line_end, size)
+        if last_user_end is not None:
+            self._tpos = last_user_end
+            self._turn_from_tg = from_tg
+
+    def _mark_sent(self, uuid: str) -> None:
+        """Record a forwarded message uuid in memory and on disk (append-only ledger)."""
+        if not uuid or uuid in self._sent_keys:
+            return
+        self._sent_keys.add(uuid)
+        try:
+            self._sent_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._sent_path, "a", encoding="utf-8") as f:
+                f.write(uuid + "\n")
+        except OSError:
+            pass
 
     # ---- inbound (Telegram → session) -------------------------------------
     def _inbound_loop(self) -> None:
@@ -292,15 +323,16 @@ class AttachBridge:
             text = "\n".join(b.get("text", "") for b in blocks
                              if isinstance(b, dict) and b.get("type") == "text").strip()
             uuid = rec.get("uuid", "")
-            if text and uuid not in self._sent_keys:
-                self._sent_keys.add(uuid)
+            if text:
                 lines = text.splitlines()
                 if lines and lines[0].lstrip().startswith(self._marker):
                     lines[0] = lines[0].lstrip()[len(self._marker):].lstrip()   # strip internal cue
                 out = "\n".join(lines).strip()
                 if out and self._owner_chat is not None:
-                    self._status_clear()                 # remove the technical bubble first
-                    self.tg.send_message(self._owner_chat, out)
+                    self._status_clear()                 # content present → drop the technical bubble
+                    if uuid not in self._sent_keys:      # ledger dedups across restarts
+                        self._mark_sent(uuid)
+                        self.tg.send_message(self._owner_chat, out)
             # 2) Tool calls AFTER the text → a fresh live status bubble for the next steps.
             for b in blocks:
                 if isinstance(b, dict) and b.get("type") == "tool_use":
