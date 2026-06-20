@@ -32,10 +32,19 @@ else
 fi
 
 # 3) Install for the current user (no sudo, no virtualenv required)
+# Make sure pip exists (a bare server may ship Python without it).
+"$PY" -m pip --version >/dev/null 2>&1 || "$PY" -m ensurepip --user >/dev/null 2>&1 || true
 say "Installing the package"
 "$PY" -m pip install --user --upgrade "$SRC" 2>/dev/null \
   || "$PY" -m pip install --user --break-system-packages --upgrade "$SRC"
 
-# 4) Launch the setup wizard
-say "Starting setup…"
-exec "$PY" -m agent2telegram setup
+# 4) Launch the setup wizard.
+# When invoked as `curl … | bash`, this script's stdin is the pipe, not your keyboard,
+# so the interactive wizard must read from the controlling terminal (/dev/tty).
+if [ -e /dev/tty ]; then
+  say "Starting setup…"
+  exec "$PY" -m agent2telegram setup </dev/tty
+else
+  say "Installed. Finish setup with:"
+  echo "    $PY -m agent2telegram setup"
+fi
