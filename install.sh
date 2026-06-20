@@ -4,6 +4,10 @@
 # It checks Python, installs the package for the current user, and launches setup.
 set -euo pipefail
 
+# Recover the working directory if it was deleted (e.g. you just uninstalled while sitting in
+# the source clone) — otherwise git/curl fail with "cannot access parent directories: getcwd".
+cd "$PWD" 2>/dev/null || cd "$HOME" 2>/dev/null || cd /
+
 REPO="https://github.com/petrludwig-collab/Agent2Telegram.git"
 NEED_PY_MAJOR=3
 NEED_PY_MINOR=10
