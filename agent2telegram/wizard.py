@@ -12,6 +12,7 @@ also register the Stop hook that marks end-of-turn.
 """
 from __future__ import annotations
 
+import getpass
 import json
 import shutil
 import subprocess
@@ -35,6 +36,15 @@ def _ask(prompt: str, default: str = "") -> str:
     except EOFError:
         ans = ""
     return ans or default
+
+
+def _ask_secret(prompt: str) -> str:
+    """Read a secret (token / API key) without echoing it — so it never lands in the terminal
+    scrollback, screenshots, or shell history."""
+    try:
+        return getpass.getpass(f"{prompt}: ").strip()
+    except (EOFError, getpass.GetPassWarning):
+        return _ask(prompt)   # fall back to visible input if no tty
 
 
 def _yes(prompt: str, default_yes: bool = False) -> bool:
@@ -121,9 +131,9 @@ def _choose_session(agent_cls) -> str:
 # ---------------------------------------------------------------- step 3: telegram
 def _enter_token() -> tuple[str, dict]:
     print("\n── Step 3/3 · Connect Telegram ──\n")
-    print("Create a bot with @BotFather and paste its token below.")
+    print("Create a bot with @BotFather and paste its token below (hidden as you type).")
     while True:
-        token = _ask("Telegram bot token")
+        token = _ask_secret("Telegram bot token")
         if not token:
             continue
         try:
@@ -202,7 +212,7 @@ def run() -> int:
         progress_marker="[TG]",
     )
     if _yes("\nEnable voice messages via ElevenLabs Scribe?"):
-        cfg.elevenlabs_api_key = _ask("ElevenLabs API key")
+        cfg.elevenlabs_api_key = _ask_secret("ElevenLabs API key (hidden)")
 
     path = save(cfg)
     print(f"\n✓ Saved config to {path} (permissions 0600).")
