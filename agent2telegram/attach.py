@@ -14,6 +14,7 @@ This keeps the agent's full session (context, persona, tools) and adds Telegram 
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
@@ -174,6 +175,11 @@ class AttachBridge:
             self.tg.send_message(chat_id, "⛔ Not authorized.")
             return
 
+        # Light "typing…" from the very first moment — including the voice-transcription /
+        # file-download window (seconds), so the indicator never has a gap at the start.
+        self._turn_active.set()
+        self._last_activity = time.monotonic()
+
         text = (msg.get("text") or msg.get("caption") or "").strip()
         if msg.get("voice") or msg.get("audio"):
             text = self._transcribe(msg.get("voice") or msg.get("audio"), chat_id) or text
@@ -210,16 +216,18 @@ class AttachBridge:
 
     # ---- live tool-call status bubble (shown during the turn, deleted at the end) ------
     def _status_push(self, line: str) -> None:
-        # Single line, emoji at the start; edited in place as the current step changes.
+        # Single line, emoji at the start, rendered in italics; edited in place as the
+        # current step changes, and deleted the moment a progress/final message appears.
         if self._owner_chat is None or not line or line == self._status["shown"]:
             return
+        body = f"<i>{html.escape(line)}</i>"
         if self._status["mid"] is None:
-            mid = self.tg.send_plain_id(self._owner_chat, line)
+            mid = self.tg.send_plain_id(self._owner_chat, body, parse_mode="HTML")
             if mid:
                 self._status["mid"] = mid
                 self._status["shown"] = line
         else:
-            self.tg.edit_plain(self._owner_chat, self._status["mid"], line)
+            self.tg.edit_plain(self._owner_chat, self._status["mid"], body, parse_mode="HTML")
             self._status["shown"] = line
 
     def _status_clear(self) -> None:
@@ -237,6 +245,7 @@ class AttachBridge:
         except OSError:
             return
         if answer and self._owner_chat is not None:
+            self._status_clear()                         # final message → drop the technical bubble
             self.tg.send_message(self._owner_chat, answer)
             self._turn_active.clear()
 
@@ -278,28 +287,27 @@ class AttachBridge:
             if typ != "assistant" or not self._turn_from_tg:
                 continue
             blocks = content if isinstance(content, list) else []
-            # Tool calls → live status bubble (edited in place, deleted at turn end).
+            # 1) Text → a kept progress/final message. Posting it first DELETES the live
+            #    technical bubble (the tool steps that led here are done) — exactly as asked.
+            text = "\n".join(b.get("text", "") for b in blocks
+                             if isinstance(b, dict) and b.get("type") == "text").strip()
+            uuid = rec.get("uuid", "")
+            if text and uuid not in self._sent_keys:
+                self._sent_keys.add(uuid)
+                lines = text.splitlines()
+                if lines and lines[0].lstrip().startswith(self._marker):
+                    lines[0] = lines[0].lstrip()[len(self._marker):].lstrip()   # strip internal cue
+                out = "\n".join(lines).strip()
+                if out and self._owner_chat is not None:
+                    self._status_clear()                 # remove the technical bubble first
+                    self.tg.send_message(self._owner_chat, out)
+            # 2) Tool calls AFTER the text → a fresh live status bubble for the next steps.
             for b in blocks:
                 if isinstance(b, dict) and b.get("type") == "tool_use":
                     tid = b.get("id")
                     if tid and tid not in self._seen_tools:
                         self._seen_tools.add(tid)
                         self._status_push(_tool_summary(b.get("name", ""), b.get("input")))
-            # Text → a kept progress message.
-            text = "\n".join(b.get("text", "") for b in blocks
-                             if isinstance(b, dict) and b.get("type") == "text").strip()
-            if not text:
-                continue
-            uuid = rec.get("uuid", "")
-            if uuid in self._sent_keys:
-                continue
-            self._sent_keys.add(uuid)
-            lines = text.splitlines()
-            if lines and lines[0].lstrip().startswith(self._marker):
-                lines[0] = lines[0].lstrip()[len(self._marker):].lstrip()   # strip internal cue
-            out = "\n".join(lines).strip()
-            if out and self._owner_chat is not None:
-                self.tg.send_message(self._owner_chat, out)
         # Any new transcript content during a Telegram turn = the agent is still working;
         # refresh activity so the typing indicator stays lit until the turn goes quiet.
         if self._turn_from_tg:
