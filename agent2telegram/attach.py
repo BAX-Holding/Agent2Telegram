@@ -101,6 +101,7 @@ class AttachBridge:
         self._turn_from_tg = False           # is the current transcript turn Telegram-originated?
         self._last_activity = 0.0            # monotonic ts of last transcript activity (for typing)
         self._status = {"mid": None, "shown": ""}   # live one-line tool-call status bubble
+        self._poke_pending = False                   # re-assert typing on next tick (after end-check)
         # Persist the bubble's message_id so a restart/crash mid-turn can delete the orphan it
         # would otherwise leave behind in the chat.
         self._status_path = (self._signal.parent / "status_bubble") if self._signal else None
@@ -281,6 +282,12 @@ class AttachBridge:
                 elif self._turn_active.is_set() and time.monotonic() - self._last_activity > IDLE_DONE:
                     self._status_clear()
                     self._turn_active.clear()
+                # Deferred typing re-assert: runs AFTER the end-of-turn check, so the final
+                # message (followed immediately by the turn-end marker) doesn't re-light typing,
+                # while mid-turn messages still do. _poke_typing is a no-op once the turn ended.
+                if self._poke_pending:
+                    self._poke_pending = False
+                    self._poke_typing()
             except Exception as e:
                 log.error("outbound error: %s", e)
             self._stop.wait(0.4)
@@ -299,7 +306,7 @@ class AttachBridge:
                 self._status["mid"] = mid
                 self._status["shown"] = line
                 self._persist_status(mid)
-                self._poke_typing()      # creating the bubble is a send → re-show typing after
+                self._poke_pending = True   # creating the bubble is a send → re-show typing next tick
         else:
             self.tg.edit_plain(self._owner_chat, self._status["mid"], body, parse_mode="HTML")
             self._status["shown"] = line
@@ -406,7 +413,8 @@ class AttachBridge:
                     # place (no per-tool flicker); it's only removed when content appears or at end.
                     self._status_clear()
                     self.tg.send_message(self._owner_chat, out)
-                    self._poke_typing()                  # re-show typing right after the message
+                    self._poke_pending = True            # re-show typing next tick — unless this
+                                                         # was the final message (turn-end follows)
             # 2) Tool calls AFTER the text → a fresh live status bubble for the next steps.
             for b in blocks:
                 if isinstance(b, dict) and b.get("type") == "tool_use":
