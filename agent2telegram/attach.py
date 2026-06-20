@@ -72,6 +72,9 @@ class AttachBridge:
         self._allowed = set(cfg.allowed_user_ids)
         self._marker = cfg.progress_marker
         self._origin = cfg.origin_prefix
+        # Accept the configured prefix plus the legacy "Telegram:" one, so a prefix change
+        # mid-conversation doesn't drop the turn in flight.
+        self._origins = tuple({p for p in (cfg.origin_prefix.strip(), "Telegram:", "[TG]") if p})
         self._owner_chat = cfg.allowed_user_ids[0] if cfg.allowed_user_ids else None
         self._signal = Path(cfg.signal_file) if cfg.signal_file else None
         self._transcript = Path(cfg.transcript_path) if cfg.transcript_path else None
@@ -105,7 +108,6 @@ class AttachBridge:
     def _detect_initial_origin(self) -> None:
         """Recover whether the in-progress turn is Telegram-originated by scanning the tail
         for the most recent non-empty user message (so a restart mid-turn keeps forwarding)."""
-        origin = self._origin.strip()
         try:
             with open(self._transcript, "rb") as f:
                 f.seek(max(0, self._tpos - 5_000_000))   # large window: tool outputs can be big
@@ -124,7 +126,7 @@ class AttachBridge:
                 b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
             ) if isinstance(content, list) else ""
             if utext.strip():
-                self._turn_from_tg = utext.lstrip().startswith(origin) if origin else True
+                self._turn_from_tg = utext.lstrip().startswith(self._origins)
                 return
 
     # ---- inbound (Telegram → session) -------------------------------------
@@ -254,7 +256,6 @@ class AttachBridge:
         if nl == -1:
             return
         self._tpos += nl + 1
-        origin = self._origin.strip()
         for raw in chunk[:nl].split(b"\n"):
             line = raw.decode("utf-8", "ignore").strip()
             if not line:
@@ -272,7 +273,7 @@ class AttachBridge:
                     b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
                 ) if isinstance(content, list) else ""
                 if utext.strip():
-                    self._turn_from_tg = utext.lstrip().startswith(origin) if origin else True
+                    self._turn_from_tg = utext.lstrip().startswith(self._origins)
                 continue
             if typ != "assistant" or not self._turn_from_tg:
                 continue
