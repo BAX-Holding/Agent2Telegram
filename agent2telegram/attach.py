@@ -47,7 +47,36 @@ BOT_COMMANDS = [
     {"command": "id", "description": "Show your Telegram id"},
 ]
 
+import re as _re  # noqa: E402
+from .readers import _short  # noqa: E402
 
+#: Codex renders tool activity live in its TUI but only writes it to the rollout at completion.
+#: For Codex (attach), we scrape the tmux pane for these lines so tool bubbles appear LIVE —
+#: matching Claude Code (which logs tool_use to its transcript immediately). Claude needs no scrape.
+_TUI_VERBS = {"Read": "📄", "List": "📂", "Search": "🔎", "Ran": "🛠️",
+              "Edit": "✏️", "Wrote": "✏️", "Added": "✏️", "Updated": "✏️",
+              "Deleted": "🗑️", "Removed": "🗑️"}
+
+
+def _extract_tui_tools(pane: str) -> list:
+    """Pull live tool/web-search lines out of a Codex TUI capture, as bubble summaries."""
+    out = []
+    for raw in pane.splitlines():
+        s = raw.strip()
+        m = _re.search(r"Searched the web for\s+(.+)", s)
+        if m:
+            out.append("🔎 Web search: " + _short(m.group(1)))
+            continue
+        if "Searching the web" in s:
+            out.append("🔎 Searching the web")
+            continue
+        if s.startswith("└"):
+            body = s.lstrip("└ ").strip()
+            verb = body.split(" ", 1)[0]
+            if verb in _TUI_VERBS:
+                rest = body[len(verb):].strip()
+                out.append(f"{_TUI_VERBS[verb]} {verb} {_short(rest)}".rstrip())
+    return out
 
 
 class AttachBridge:
@@ -98,6 +127,7 @@ class AttachBridge:
         # would otherwise leave behind in the chat.
         self._status_path = (self._signal.parent / "status_bubble") if self._signal else None
         self._seen_tools: set = set()
+        self._tui_seen: set = set()          # Codex TUI scrape: tool lines already shown this turn
 
     # ---- transcript resolution --------------------------------------------
     def _codex_sessions_dir(self) -> Path:
@@ -259,6 +289,9 @@ class AttachBridge:
         # Typing runs in its own thread so a flood-control sleep in the send path never starves it.
         threading.Thread(target=self._outbound_loop, daemon=True).start()
         threading.Thread(target=self._typing_loop, daemon=True).start()
+        if self.cfg.agent == "codex":
+            # Codex logs tools to the rollout only at completion → scrape the TUI for LIVE bubbles.
+            threading.Thread(target=self._tui_scrape_loop, daemon=True).start()
         self._inbound_loop()
 
     def _resume_position(self) -> None:
@@ -368,6 +401,7 @@ class AttachBridge:
         self._typing_count = 1
         self._max_gap = 0.0
         self._last_typing = now
+        self._tui_seen = set()                   # fresh TUI tool-scrape dedup for this turn
         self.tg.send_chat_action(self._owner_chat, "typing")   # instant, don't wait for the loop
         log.info("TURN START t=%.2f", time.time())
 
@@ -459,6 +493,20 @@ class AttachBridge:
                 self._last_typing = now
                 self._typing_count += 1
             self._stop.wait(TYPING_INTERVAL)
+
+    def _tui_scrape_loop(self) -> None:
+        """Codex only: scrape the tmux pane for live tool/web-search lines → status bubbles, so
+        Codex (whose rollout logs tools only at completion) shows them live like Claude Code."""
+        while not self._stop.is_set():
+            if self._turn_active.is_set() and self._turn_from_tg and self._owner_chat is not None:
+                try:
+                    for summary in _extract_tui_tools(self._session._capture()):
+                        if summary not in self._tui_seen:
+                            self._tui_seen.add(summary)
+                            self._status_push(summary)
+                except Exception as e:
+                    log.debug("tui scrape: %s", e)
+            self._stop.wait(1.0)
 
     def _consume_turn_end(self) -> None:
         if self._turn_end is not None:
@@ -635,6 +683,8 @@ class AttachBridge:
                 log.info("FWD +%.1fs (send %.1fs) %r",
                          _t0 - self._turn_started, time.monotonic() - _t0, out[:30])
         elif ev.kind == "tool":
+            if self.cfg.agent == "codex":
+                return                            # Codex tools come live from the TUI scraper
             if ev.key and ev.key not in self._seen_tools:
                 self._seen_tools.add(ev.key)
                 self._status_push(ev.text)
