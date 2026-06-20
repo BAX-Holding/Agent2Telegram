@@ -31,20 +31,34 @@ else
   else say "Cloning into $SRC"; git clone --depth 1 "$REPO" "$SRC"; fi
 fi
 
-# 3) Install for the current user (no sudo, no virtualenv required)
-# Make sure pip exists (a bare server may ship Python without it).
-"$PY" -m pip --version >/dev/null 2>&1 || "$PY" -m ensurepip --user >/dev/null 2>&1 || true
-say "Installing the package"
-"$PY" -m pip install --user --upgrade "$SRC" 2>/dev/null \
-  || "$PY" -m pip install --user --break-system-packages --upgrade "$SRC"
+# 3) Make `agent2telegram` runnable. The core is pure standard library, so pip is OPTIONAL:
+#    if it's available we install onto PATH; if not (common on a bare Debian/Ubuntu where pip
+#    and ensurepip are absent), we just run from the clone — identical behavior, no install.
+INSTALLED=0
+if "$PY" -m pip --version >/dev/null 2>&1 || "$PY" -m ensurepip --upgrade >/dev/null 2>&1; then
+  say "Installing the package"
+  if "$PY" -m pip install --user --upgrade "$SRC" >/dev/null 2>&1 \
+     || "$PY" -m pip install --user --break-system-packages --upgrade "$SRC" >/dev/null 2>&1; then
+    INSTALLED=1
+  fi
+fi
+if [ "$INSTALLED" = 1 ]; then
+  RUN=("$PY" -m agent2telegram)
+  HOW="$PY -m agent2telegram"
+else
+  say "pip unavailable — running directly from the clone (no install needed; it's dependency-free)."
+  RUN=(env "PYTHONPATH=$SRC" "$PY" -m agent2telegram)
+  HOW="PYTHONPATH=$SRC $PY -m agent2telegram"
+fi
 
 # 4) Launch the setup wizard.
 # When invoked as `curl … | bash`, this script's stdin is the pipe, not your keyboard,
 # so the interactive wizard must read from the controlling terminal (/dev/tty).
+say "Run it later with:  $HOW run"
 if [ -e /dev/tty ]; then
   say "Starting setup…"
-  exec "$PY" -m agent2telegram setup </dev/tty
+  exec "${RUN[@]}" setup </dev/tty
 else
   say "Installed. Finish setup with:"
-  echo "    $PY -m agent2telegram setup"
+  echo "    $HOW setup"
 fi
