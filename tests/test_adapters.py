@@ -63,5 +63,18 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("--model", argv)
 
 
+class TuiLaunchTests(unittest.TestCase):
+    """The wizard launches the interactive TUI with the autonomous flag, so the bridge can drive
+    the agent unattended — otherwise a fresh install blocks on an approval prompt nobody can see."""
+
+    def test_codex_launches_with_bypass_flag(self):
+        self.assertEqual(CodexAdapter.tui_launch(),
+                         ["codex", "--dangerously-bypass-approvals-and-sandbox"])
+
+    def test_claude_launches_with_skip_permissions(self):
+        self.assertEqual(ClaudeCodeAdapter.tui_launch(),
+                         ["claude", "--dangerously-skip-permissions"])
+
+
 if __name__ == "__main__":
     unittest.main()

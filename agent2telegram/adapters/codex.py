@@ -16,6 +16,10 @@ class CodexAdapter(Adapter):
     name = "codex"
     label = "Codex"
     binary = "codex"
+    # Interactive TUI for attach mode: bypass per-command approval/sandbox prompts so the bridge
+    # can drive it unattended from Telegram (only allow-listed users reach it). Without this flag
+    # Codex would block on an approval prompt nobody can answer from the chat.
+    tui_command = ["codex", "--dangerously-bypass-approvals-and-sandbox"]
     default_command = ["codex", "exec", "{prompt}"]
     # `resume` is a subcommand of `codex exec`; `--last` picks the most recent session.
     # (Verified against `codex exec --help`.)

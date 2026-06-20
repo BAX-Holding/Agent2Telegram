@@ -237,6 +237,12 @@ docker run -d --name agent2telegram \
   / `doctor` always print it redacted.
 - Prompts are passed to the agent as a single `argv` element (never through a shell), so a
   message can’t inject shell syntax.
+- **The wizard launches the agent with its "run without asking" flag** (Codex
+  `--dangerously-bypass-approvals-and-sandbox`, Claude Code `--dangerously-skip-permissions`) —
+  the bridge drives it unattended, so it can't stop to ask you to approve each command. That
+  makes the allow‑list and a least‑privileged user the real safeguards. If you'd rather approve
+  every action by hand, start the agent yourself without the flag and point the wizard at that
+  tmux session instead of creating a new one.
 - Consider running the agent under a dedicated, least‑privileged user.
 
 ---

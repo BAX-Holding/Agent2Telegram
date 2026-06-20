@@ -35,6 +35,16 @@ class Adapter:
     #: argv template for follow-up messages (continue the conversation). Falls back to
     #: ``default_command`` when empty (i.e. the agent has no continue mode).
     continue_command: list[str] = []
+    #: Command to launch the agent's *interactive* TUI inside a tmux session (attach mode).
+    #: Includes the flag that lets it run autonomously — no per-command approval prompt — since
+    #: the bridge drives it unattended and only allow-listed users can reach it. Falls back to
+    #: just the binary when unset.
+    tui_command: list[str] = []
+
+    @classmethod
+    def tui_launch(cls) -> list[str]:
+        """The full command the wizard types into a fresh tmux session to start the agent."""
+        return cls.tui_command or ([cls.binary] if cls.binary else [])
 
     def __init__(self, *, command: list[str] | None = None,
                  continue_command: list[str] | None = None, timeout: int = 600) -> None:

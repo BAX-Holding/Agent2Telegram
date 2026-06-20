@@ -128,12 +128,15 @@ def _list_sessions() -> list[str]:
 
 
 def _create_session(name: str, agent_cls) -> bool:
-    """Create a detached tmux session and launch the agent's CLI inside it."""
+    """Create a detached tmux session and launch the agent's interactive CLI inside it, with the
+    flag that lets the bridge drive it unattended (no per-command approval prompt)."""
+    launch = " ".join(agent_cls.tui_launch())
     try:
         subprocess.run(["tmux", "new-session", "-d", "-s", name], check=True, timeout=10)
-        if agent_cls.binary:
-            subprocess.run(["tmux", "send-keys", "-t", name, agent_cls.binary, "Enter"],
+        if launch:
+            subprocess.run(["tmux", "send-keys", "-t", name, launch, "Enter"],
                            check=True, timeout=10)
+            print(f"  launched: {launch}")
         return True
     except (subprocess.SubprocessError, OSError) as e:
         print(f"  ✗ couldn't create the session: {e}")
