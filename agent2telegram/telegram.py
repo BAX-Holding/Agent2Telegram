@@ -42,6 +42,11 @@ def markdown_to_html(text: str) -> str:
                   lambda m: keep(f"<pre>{_html.escape(m.group(1))}</pre>"), text, flags=re.S)
     text = re.sub(r"`([^`\n]+)`",
                   lambda m: keep(f"<code>{_html.escape(m.group(1))}</code>"), text)
+    # Markdown links [text](url) → <a href>; stashed so the URL isn't escaped/mangled.
+    text = re.sub(
+        r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)",
+        lambda m: keep(f'<a href="{_html.escape(m.group(2), quote=True)}">{_html.escape(m.group(1))}</a>'),
+        text)
     text = _html.escape(text)
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.S)
     text = re.sub(r"(?<!\w)\*([^*\n]+?)\*(?!\w)", r"<i>\1</i>", text)
