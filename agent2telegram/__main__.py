@@ -31,7 +31,10 @@ def _cmd_run(args) -> int:
     except ConfigError as e:
         print(f"✗ {e}", file=sys.stderr)
         return 2
-    if cfg.mode == "attach":
+    if cfg.mode == "stream":
+        from .stream import StreamBridge
+        StreamBridge(cfg).run()
+    elif cfg.mode == "attach":
         from .attach import AttachBridge
         AttachBridge(cfg).run()
     else:
