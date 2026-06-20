@@ -148,7 +148,8 @@ class AttachBridge:
             for f in files:                       # newest first → our session's own rollout
                 if self._rollout_cwd(Path(f)) == cwd:
                     return Path(f)
-        return Path(files[0])                     # fallback: newest overall
+            return None                           # cwd known but no rollout yet → wait, don't grab
+        return Path(files[0])                     # cwd unknown → best-effort newest overall
 
     def _resolve_transcript(self) -> Path | None:
         """Resolve the transcript to tail. An explicit path is used as-is; ``""``/``"auto"``
@@ -164,20 +165,28 @@ class AttachBridge:
         return None
 
     def _maybe_reresolve_codex(self) -> None:
-        """If Codex restarted its session (new rollout for our tmux cwd), follow it from its start.
-        Never switches mid-turn, so an in-flight reply is never abandoned."""
-        if self.cfg.agent != "codex" or self._turn_active.is_set():
+        """Keep the tailed transcript pointed at our tmux session's own Codex rollout.
+
+        Codex writes the rollout on the first message (not at TUI launch), and a session restart
+        starts a new one — so we re-check periodically. We switch when a better-matching rollout
+        appears, but never abandon a *correctly-attached* in-flight turn for a transient newer file."""
+        if self.cfg.agent != "codex":
             return
         now = time.monotonic()
-        if now - self._last_resolve < 10.0:
+        if now - self._last_resolve < 3.0:
             return
         self._last_resolve = now
         newest = self._newest_rollout()
-        if newest and newest != self._transcript:
-            log.info("Codex session switched → %s", newest.name)
-            self._transcript = newest
-            self._tpos = 0
-            self._resume_position()
+        if not newest or newest == self._transcript:
+            return
+        attached_ok = (self._transcript is not None
+                       and self._rollout_cwd(self._transcript) == self._session_cwd())
+        if attached_ok and self._turn_active.is_set():
+            return                                # correctly attached + busy → don't jump away
+        log.info("Codex rollout → %s", newest.name)
+        self._transcript = newest
+        self._tpos = 0
+        self._resume_position()
 
     # ---- lifecycle ---------------------------------------------------------
     def run(self) -> None:
