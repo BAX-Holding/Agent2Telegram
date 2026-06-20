@@ -139,13 +139,16 @@ Both report `6/6 checks passed` on a working setup.
 
 ## Uninstall
 
+One line — the exact mirror of the install one‑liner:
+
 ```bash
-python3 -m agent2telegram uninstall
+curl -fsSL https://raw.githubusercontent.com/petrludwig-collab/Agent2Telegram/main/uninstall.sh | bash
 ```
 
-Stops any running bridge, removes the config (token included) and state, and unregisters the
-Claude Code Stop hook. It prints the two optional manual steps it can't do itself (delete the
-source clone, `pip uninstall`). Add `--yes` to skip the prompt.
+That stops any running bridge and removes **everything**: the config (token included), state,
+the source clone, the launcher, the Claude Code Stop hook, and the pip package — no leftovers,
+no manual steps. (If you prefer, the equivalent from a clone is `python3 -m agent2telegram
+uninstall`; add `--yes` to skip the confirmation prompt.)
 
 ---
 
