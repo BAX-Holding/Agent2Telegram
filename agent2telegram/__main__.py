@@ -67,6 +67,66 @@ def _cmd_doctor(_args) -> int:
     return 0 if ok else 1
 
 
+def _cmd_uninstall(args) -> int:
+    import json
+    import os
+    import shutil
+    import signal
+    import subprocess
+    from pathlib import Path
+    from .config import DEFAULT_PATH
+
+    print("This stops any running Agent2Telegram bridge and removes its config + state.")
+    if not args.yes:
+        try:
+            if input("Continue? (y/N): ").strip().lower() not in ("y", "yes"):
+                print("Aborted.")
+                return 0
+        except EOFError:
+            print("Aborted — no terminal; rerun with --yes.")
+            return 0
+
+    # 1) Stop running bridges (never this process — it's `uninstall`, not `run`).
+    killed = 0
+    if shutil.which("pgrep"):
+        try:
+            out = subprocess.run(["pgrep", "-f", "agent2telegram run"],
+                                 capture_output=True, text=True, timeout=10)
+            for pid in out.stdout.split():
+                try:
+                    os.kill(int(pid), signal.SIGTERM)
+                    killed += 1
+                except (OSError, ValueError):
+                    pass
+        except (OSError, subprocess.SubprocessError):
+            pass
+    print(f"  stopped {killed} running bridge(s)" if killed else "  no running bridge found")
+
+    # 2) Unregister the Claude Code Stop hook, if the wizard added one.
+    settings = Path.home() / ".claude" / "settings.json"
+    try:
+        data = json.loads(settings.read_text("utf-8"))
+        stops = data.get("hooks", {}).get("Stop", [])
+        kept = [h for h in stops if "agent2telegram.stop_hook" not in json.dumps(h)]
+        if len(kept) != len(stops):
+            data["hooks"]["Stop"] = kept
+            settings.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            print(f"  removed the Stop hook from {settings}")
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        pass
+
+    # 3) Remove config (incl. token + ledger) and state.
+    for d in (DEFAULT_PATH.parent, Path.home() / ".local" / "state" / "agent2telegram"):
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+            print(f"  removed {d}")
+
+    print("\nDone. The code itself wasn't deleted (it's running this). To remove it too:")
+    print("  rm -rf ~/.agent2telegram-src        # the clone, if you used the installer")
+    print("  pip uninstall -y agent2telegram     # if you installed it with pip")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agent2telegram", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -83,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--agent", default="codex", choices=["codex", "claude-code"],
                     help="which agent to test (default: codex)")
     st.add_argument("--keep", action="store_true", help="keep the throwaway tmux session afterwards")
+    un = sub.add_parser("uninstall", help="stop the bridge and remove config + state")
+    un.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
 
     args = parser.parse_args(argv)
     _setup_logging(args.verbose)
@@ -100,6 +162,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "selftest":
         from . import selftest
         return selftest.run(args.agent, keep=args.keep)
+    if args.command == "uninstall":
+        return _cmd_uninstall(args)
     parser.error("unknown command")
     return 2
 

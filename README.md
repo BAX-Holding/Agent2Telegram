@@ -137,6 +137,18 @@ Both report `6/6 checks passed` on a working setup.
 
 ---
 
+## Uninstall
+
+```bash
+python3 -m agent2telegram uninstall
+```
+
+Stops any running bridge, removes the config (token included) and state, and unregisters the
+Claude Code Stop hook. It prints the two optional manual steps it can't do itself (delete the
+source clone, `pip uninstall`). Add `--yes` to skip the prompt.
+
+---
+
 ## Voice messages (optional)
 
 Voice notes are transcribed with **ElevenLabs Scribe** (`scribe_v1`) and the transcript is
