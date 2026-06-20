@@ -130,10 +130,18 @@ def _voice() -> dict:
 
 def _drive(bridge, until, timeout: float) -> bool:
     """Pump the outbound loop until *until()* is true or *timeout* elapses."""
+    from .attach import _extract_tui_tools
     start = time.monotonic()
     while time.monotonic() - start < timeout:
         bridge._maybe_reresolve()
         bridge._drain_transcript()
+        # Codex tool bubbles come from the live TUI scraper, not the transcript — pump it here
+        # so the end-to-end test actually exercises that path (and catches Codex layout drift).
+        if bridge.cfg.agent == "codex" and bridge._turn_active.is_set():
+            for summary in _extract_tui_tools(bridge._session._capture()):
+                if summary not in bridge._tui_seen:
+                    bridge._tui_seen.add(summary)
+                    bridge._status_push(summary)
         if bridge._pending_turn_end:
             bridge._finish_turn()
         if until():
