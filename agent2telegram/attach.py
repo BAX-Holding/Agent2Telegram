@@ -280,8 +280,9 @@ class AttachBridge:
 
     # ---- live tool-call status bubble (shown during the turn, deleted at the end) ------
     def _status_push(self, line: str) -> None:
-        # Single line, emoji at the start, rendered in italics; one bubble edited in place as
-        # the current step changes, removed once at turn end (not per step — that would flicker).
+        # Single line, emoji at the start, rendered in italics. One bubble is edited in place
+        # across a run of consecutive tool calls; it's deleted when the next progress message
+        # arrives (then re-created below it) and at turn end — so it always trails at the bottom.
         if self._owner_chat is None or not line or line == self._status["shown"]:
             return
         body = f"<i>{html.escape(line)}</i>"
@@ -390,10 +391,12 @@ class AttachBridge:
                     lines[0] = lines[0].lstrip()[len(self._marker):].lstrip()   # strip internal cue
                 out = "\n".join(lines).strip()
                 if out and self._owner_chat is not None and uuid not in self._sent_keys:
-                    # Keep the single technical bubble editing in place across tools AND progress
-                    # messages — don't delete+recreate per step (that flickers). It's removed once,
-                    # after the last technical step, at turn end / on the final answer.
                     self._mark_sent(uuid)                # ledger dedups across restarts
+                    # A new progress message → delete the current technical bubble so the next
+                    # tool calls re-create it BELOW this message (the bubble always trails at the
+                    # bottom). Between two progress messages a run of tools edits one bubble in
+                    # place (no per-tool flicker); it's only removed when content appears or at end.
+                    self._status_clear()
                     self.tg.send_message(self._owner_chat, out)
             # 2) Tool calls AFTER the text → a fresh live status bubble for the next steps.
             for b in blocks:
