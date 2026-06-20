@@ -118,15 +118,28 @@ def _cmd_uninstall(args) -> int:
     except (OSError, json.JSONDecodeError, KeyError, TypeError):
         pass
 
-    # 3) Remove config (incl. token + ledger) and state.
-    for d in (DEFAULT_PATH.parent, Path.home() / ".local" / "state" / "agent2telegram"):
-        if d.exists():
-            shutil.rmtree(d, ignore_errors=True)
-            print(f"  removed {d}")
+    # 3) Kill the tmux session that hosts the bridge (the installer/launcher uses 'a2t-bridge').
+    if shutil.which("tmux"):
+        subprocess.run(["tmux", "kill-session", "-t", "a2t-bridge"], capture_output=True)
 
-    print("\nDone. The code itself wasn't deleted (it's running this). To remove it too:")
-    print("  rm -rf ~/.agent2telegram-src        # the clone, if you used the installer")
-    print("  pip uninstall -y agent2telegram     # if you installed it with pip")
+    # 4) Remove everything the installer created: config (token+ledger), state, the source clone
+    #    and the launcher. All imports are already done, so deleting the clone we run from is safe.
+    home = Path.home()
+    targets = [DEFAULT_PATH.parent, home / ".local" / "state" / "agent2telegram",
+               home / ".agent2telegram-src", home / "start-a2t-bridge.sh"]
+    for d in targets:
+        try:
+            if d.is_dir():
+                shutil.rmtree(d, ignore_errors=True); print(f"  removed {d}")
+            elif d.exists():
+                d.unlink(); print(f"  removed {d}")
+        except OSError:
+            pass
+
+    # 5) Remove the pip package too, if it was installed that way (no-op otherwise).
+    subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "agent2telegram"],
+                   capture_output=True)
+    print("\n✓ Agent2Telegram fully removed.")
     return 0
 
 
