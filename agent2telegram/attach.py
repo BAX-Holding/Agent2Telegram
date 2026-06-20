@@ -405,7 +405,16 @@ class AttachBridge:
         self._typing_count = 1
         self._max_gap = 0.0
         self._last_typing = now
-        self._tui_seen = set()                   # fresh TUI tool-scrape dedup for this turn
+        # Seed the TUI dedup with tool lines ALREADY on screen from previous turns, so the
+        # scraper only emits calls that appear DURING this turn — otherwise stale lines still
+        # visible in the pane get re-sent as bubbles under the new turn.
+        if self.cfg.agent == "codex":
+            try:
+                self._tui_seen = set(_extract_tui_tools(self._session._capture()))
+            except Exception:
+                self._tui_seen = set()
+        else:
+            self._tui_seen = set()
         self.tg.send_chat_action(self._owner_chat, "typing")   # instant, don't wait for the loop
         log.info("TURN START t=%.2f", time.time())
 
