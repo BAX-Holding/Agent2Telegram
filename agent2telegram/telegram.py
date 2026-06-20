@@ -12,8 +12,10 @@ Transport notes:
 """
 from __future__ import annotations
 
+import html as _html
 import json
 import logging
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -24,6 +26,33 @@ log = logging.getLogger("agent2telegram.telegram")
 API_ROOT = "https://api.telegram.org"
 #: Telegram rejects text messages longer than 4096 UTF-16 code units. We keep a margin.
 MAX_MESSAGE_LEN = 4000
+
+
+def markdown_to_html(text: str) -> str:
+    """Convert the common Markdown subset (``**bold**``, ``*italic*``/``_italic_``,
+    `` `code` ``, fenced ``` blocks) to the HTML Telegram supports. Without this, agents'
+    Markdown shows literally (asterisks/backticks) in Telegram."""
+    stash: list[str] = []
+
+    def keep(s: str) -> str:
+        stash.append(s)
+        return f"\x00{len(stash) - 1}\x00"
+
+    text = re.sub(r"```(?:\w+)?\n?(.*?)```",
+                  lambda m: keep(f"<pre>{_html.escape(m.group(1))}</pre>"), text, flags=re.S)
+    text = re.sub(r"`([^`\n]+)`",
+                  lambda m: keep(f"<code>{_html.escape(m.group(1))}</code>"), text)
+    text = _html.escape(text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.S)
+    text = re.sub(r"(?<!\w)\*([^*\n]+?)\*(?!\w)", r"<i>\1</i>", text)
+    text = re.sub(r"(?<!\w)_([^_\n]+?)_(?!\w)", r"<i>\1</i>", text)
+    for i, s in enumerate(stash):
+        text = text.replace(f"\x00{i}\x00", s)
+    return text
+
+
+def _strip_markdown(text: str) -> str:
+    return text.replace("**", "").replace("`", "")
 
 
 def split_message(text: str, limit: int = MAX_MESSAGE_LEN) -> list[str]:
@@ -142,17 +171,23 @@ class TelegramClient:
         except TelegramError:
             pass  # purely cosmetic; never let it break a turn
 
-    def send_message(self, chat_id: int, text: str, *, parse_mode: str | None = None) -> None:
+    def send_message(self, chat_id: int, text: str, *, parse_mode: str = "auto") -> None:
+        """Send text, splitting to Telegram's size limit. By default (``parse_mode="auto"``)
+        the agent's Markdown is rendered via HTML; on any parse failure we fall back to plain
+        text so a message is never lost to a formatting glitch."""
         for chunk in split_message(text) or ["(empty response)"]:
-            params = {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": "true"}
-            if parse_mode:
-                params["parse_mode"] = parse_mode
-            try:
-                self._call("sendMessage", params)
-            except TelegramError as e:
-                # Markdown that Telegram can't parse is a common failure — retry as plain text.
-                if parse_mode:
-                    log.warning("send failed with parse_mode=%s, retrying as plain text: %s", parse_mode, e)
-                    self._call("sendMessage", {k: v for k, v in params.items() if k != "parse_mode"})
-                else:
-                    raise
+            base = {"chat_id": chat_id, "disable_web_page_preview": "true"}
+            if parse_mode == "auto":
+                try:
+                    self._call("sendMessage", {**base, "text": markdown_to_html(chunk), "parse_mode": "HTML"})
+                except TelegramError as e:
+                    log.warning("HTML send failed, falling back to plain text: %s", e)
+                    self._call("sendMessage", {**base, "text": _strip_markdown(chunk)})
+            elif parse_mode:
+                try:
+                    self._call("sendMessage", {**base, "text": chunk, "parse_mode": parse_mode})
+                except TelegramError as e:
+                    log.warning("send failed with parse_mode=%s, retrying plain: %s", parse_mode, e)
+                    self._call("sendMessage", {**base, "text": chunk})
+            else:
+                self._call("sendMessage", {**base, "text": chunk})
