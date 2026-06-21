@@ -184,6 +184,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-V", "--version", action="version", version=f"agent2telegram {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("setup", help="interactive setup wizard")
+    cn = sub.add_parser("connect", help="connect one agent (tmux session) to a Telegram bot")
+    cn.add_argument("--name", help="name for this bridge (its config file); default: the session name")
+    sub.add_parser("update", help="pull the latest code and restart the running bridge(s)")
     run_p = sub.add_parser("run", help="start the bridge")
     run_p.add_argument("--config", help="path to a specific config (run multiple bridges from one install)")
     nt = sub.add_parser("notify", help="push a message to the owner (for cron/background jobs)")
@@ -204,6 +207,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "setup":
         from . import wizard
         return wizard.run()
+    if args.command == "connect":
+        from . import wizard
+        return wizard.connect(name=getattr(args, "name", None))
+    if args.command == "update":
+        from . import updater
+        return updater.run()
     if args.command == "run":
         return _cmd_run(args)
     if args.command == "notify":

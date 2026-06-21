@@ -33,12 +33,34 @@ def _load_cfg() -> dict:
         return {}
 
 
+def _all_cfgs() -> list[dict]:
+    """Every bridge config in the config directory — so a single global Stop hook serves multiple
+    Claude bridges (each `agent2telegram connect` writes its own <name>.json)."""
+    try:
+        from .config import config_path
+        d = Path(config_path()).parent
+    except Exception:
+        return []
+    out = []
+    if d.is_dir():
+        for p in sorted(d.glob("*.json")):
+            try:
+                out.append(json.loads(p.read_text("utf-8")))
+            except Exception:
+                pass
+    return out
+
+
+def _mark(signal: str) -> None:
+    marker = Path(signal).parent / "turn_end"
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def main() -> None:
-    cfg = _load_cfg()
-    signal = cfg.get("signal_file")
-    if not signal:
-        return
-    guard = cfg.get("claude_session_id", "")
     try:
         payload = json.load(sys.stdin)
     except Exception:
@@ -46,14 +68,29 @@ def main() -> None:
     path = payload.get("transcript_path")
     if not path:
         return
-    if guard and not os.path.basename(path).startswith(guard):
-        return                                   # a different Claude session → not ours
-    marker = Path(signal).parent / "turn_end"
-    try:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(str(time.time()), encoding="utf-8")
-    except OSError:
-        pass
+    base = os.path.basename(path)
+
+    cfgs = [c for c in _all_cfgs() if c.get("signal_file")]
+    if not cfgs:                                   # legacy: just the env/default config
+        c = _load_cfg()
+        if c.get("signal_file"):
+            cfgs = [c]
+
+    # A config with a session guard fires only for ITS session. If none matched (e.g. a single
+    # legacy bridge with no guard), fall back to the guard-less configs — old behaviour preserved.
+    matched = False
+    guardless = []
+    for c in cfgs:
+        guard = c.get("claude_session_id", "")
+        if guard:
+            if base.startswith(guard):
+                _mark(c["signal_file"])
+                matched = True
+        else:
+            guardless.append(c)
+    if not matched:
+        for c in guardless:
+            _mark(c["signal_file"])
 
 
 if __name__ == "__main__":

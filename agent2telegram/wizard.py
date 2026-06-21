@@ -276,5 +276,123 @@ def run() -> int:
     return 0
 
 
+# ---------------------------------------------------------------- connect (one agent → one bot)
+def _slug(name: str) -> str:
+    import re
+    s = re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+    return s or "bridge"
+
+
+def _session_cwd(session: str) -> str | None:
+    try:
+        out = subprocess.run(["tmux", "display-message", "-p", "-t", session, "#{pane_current_path}"],
+                             capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() or None
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
+def _claude_session_id_for(session: str) -> str:
+    """The Claude session UUID running in *session*, resolved from ~/.claude/projects/ by the
+    session's working directory — used as the Stop-hook guard so multiple Claude bridges each get
+    turn-end signals for their own session only."""
+    import glob
+    import os
+    import re
+    cwd = _session_cwd(session)
+    base = Path.home() / ".claude" / "projects"
+    if not cwd or not base.is_dir():
+        return ""
+    target = os.path.realpath(cwd)
+    uuid_re = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+    files = glob.glob(str(base / "**" / "*.jsonl"), recursive=True)
+    files.sort(key=lambda f: os.path.getmtime(f), reverse=True)
+    for f in files[:300]:
+        try:
+            with open(f, encoding="utf-8") as fh:
+                head = [fh.readline() for _ in range(5)]
+        except OSError:
+            continue
+        for line in head:
+            try:
+                c = json.loads(line).get("cwd")
+            except ValueError:
+                continue
+            if c and os.path.realpath(c) == target:
+                m = uuid_re.search(os.path.basename(f))
+                return m.group(0) if m else ""
+    return ""
+
+
+def connect(name: str | None = None) -> int:
+    """`agent2telegram connect` — wire ONE existing agent (a tmux session) to its OWN Telegram bot,
+    as a separate bridge with its own config file. Lets you run several bots from one install
+    (e.g. one per agent created with `agentsmon new`) without touching the others."""
+    print("=== Connect an agent to Telegram ===")
+    if not _tmux():
+        print("⚠️  tmux not found — attach mode drives a tmux session. Install tmux first.")
+        return 1
+    sessions = _list_sessions()
+    if not sessions:
+        print("No tmux sessions found — create an agent first (e.g. `agentsmon new`), then re-run.")
+        return 1
+    print("\nWhich agent (tmux session) do you want to connect?\n")
+    for i, s in enumerate(sessions, 1):
+        print(f"  {i}) {s}")
+    print()
+    while True:
+        ch = _ask("Pick a number", "1")
+        if ch.isdigit() and 1 <= int(ch) <= len(sessions):
+            session = sessions[int(ch) - 1]
+            break
+        print("Please enter a valid number.")
+
+    agent_cls = _choose_provider()
+    token, me = _enter_token()
+    owner = _capture_owner_id(token, me.get("username", "your_bot"))
+
+    slug = _slug(name or session)
+    cfg_path = config_path().parent / f"{slug}.json"
+    if cfg_path.exists() and not _yes(f"A bridge config {cfg_path} already exists. Overwrite?"):
+        print("Aborted — keeping the existing bridge.")
+        return 0
+    state = Path.home() / ".local" / "state" / "agent2telegram" / slug
+    cfg = Config(
+        agent=agent_cls.name,
+        token=token,
+        allowed_user_ids=[owner] if owner else [],
+        mode="attach",
+        tmux_session=session,
+        transcript_path="auto",
+        signal_file=str(state / "answer.txt"),
+        origin_prefix="[TG] ",
+        progress_marker="[TG]",
+        claude_session_id=(_claude_session_id_for(session) if agent_cls.name == "claude-code" else ""),
+    )
+    path = save(cfg, cfg_path)
+    print(f"\n✓ Saved bridge config to {path} (permissions 0600).")
+
+    if agent_cls.name == "codex":
+        print("  ✓ Codex needs no hook — turn boundaries come from its rollout log.")
+    elif agent_cls.name == "claude-code":
+        _register_claude_hook()
+        if not cfg.claude_session_id:
+            print("  ⚠️  Couldn't pin this session's id yet (talk to the agent once, then it'll "
+                  "route turn-end signals precisely). It still works meanwhile.")
+
+    if not cfg.allowed_user_ids:
+        print("⚠️  No authorized user — add your id to 'allowed_user_ids' before using the bot.")
+    print(f"\nAll set! Starting the bridge for '{session}' in the background…")
+    state.mkdir(parents=True, exist_ok=True)
+    log = state / "run.log"
+    subprocess.Popen([sys.executable, "-m", "agent2telegram", "run", "--config", str(path)],
+                     stdout=open(log, "a"), stderr=subprocess.STDOUT,
+                     stdin=subprocess.DEVNULL, start_new_session=True)
+    print(f"  ✓ running — logs at {log}")
+    print(f"  Message @{me.get('username')} on Telegram to test it.")
+    print("  Keep it alive across reboots by adding it to your monitoring (e.g.  agentsmon add).")
+    return 0
+
+
 if __name__ == "__main__":   # pragma: no cover
     sys.exit(run())

@@ -68,6 +68,28 @@ You get the same live UX both ways: progress messages kept, a one-line italic st
 tool calls that trails at the bottom and clears at the end, and a `typing…` indicator that stays
 lit for the whole turn.
 
+### Connect more agents (one bot each)
+
+Running several agents (e.g. one per tmux session)? Give each its own bot in one step:
+
+```bash
+python3 -m agent2telegram connect            # pick a session → pick provider → paste token
+```
+
+`connect` writes a **separate** config (`~/.config/agent2telegram/<name>.json`), starts that
+bridge alongside the others, and — for Claude Code — pins the session id so the Stop hook routes
+each turn-end to the right bridge. Your existing bots are left untouched. Name it explicitly with
+`--name`.
+
+### Update
+
+```bash
+python3 -m agent2telegram update             # git pull + restart every running bridge on the new code
+```
+
+Pulls the latest code into `~/.agent2telegram-src` and restarts each running bridge, preserving
+its own `--config` — no re-setup, no re-entering tokens.
+
 ---
 
 ## Install with an agent (easiest for beginners, fresh server)
