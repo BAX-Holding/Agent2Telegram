@@ -31,6 +31,18 @@ def _cmd_run(args) -> int:
     except ConfigError as e:
         print(f"✗ {e}", file=sys.stderr)
         return 2
+    # Fill in the bot @username (non-secret) on startup if missing, so other tools (e.g. the
+    # Agents Monitoring dashboard's Telegram link) can use it. Self-heals older configs on restart.
+    if not cfg.bot_username:
+        try:
+            from .telegram import TelegramClient
+            from .config import save
+            me = TelegramClient(cfg.token).get_me()
+            if me.get("username"):
+                cfg.bot_username = me["username"]
+                save(cfg)
+        except Exception:
+            pass
     if cfg.mode == "stream":
         from .stream import StreamBridge
         StreamBridge(cfg).run()
