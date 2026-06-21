@@ -324,6 +324,48 @@ def _claude_session_id_for(session: str) -> str:
     return ""
 
 
+def _detect_agent_in_session(session: str):
+    """Which supported agent is actually running inside *session* — so we don't ask again after
+    the user already picked the session. Walks the session's pane process subtree and matches the
+    adapter binaries. Returns the adapter class, or None if it can't tell."""
+    import re
+    try:
+        panes = subprocess.run(["tmux", "list-panes", "-t", session, "-F", "#{pane_pid}"],
+                               capture_output=True, text=True, timeout=5).stdout.split()
+        pane_pids = [int(p) for p in panes if p.isdigit()]
+    except (subprocess.SubprocessError, OSError, ValueError):
+        return None
+    if not pane_pids:
+        return None
+    ps = subprocess.run(["ps", "-eo", "pid=,ppid=,command="], capture_output=True, text=True).stdout
+    children: dict[int, list[int]] = {}
+    cmd: dict[int, str] = {}
+    for line in ps.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        pid, ppid = int(parts[0]), int(parts[1])
+        children.setdefault(ppid, []).append(pid)
+        cmd[pid] = parts[2]
+    seen: set[int] = set()
+    stack = list(pane_pids)
+    cmds: list[str] = []
+    while stack:
+        p = stack.pop()
+        if p in seen:
+            continue
+        seen.add(p)
+        if p in cmd:
+            cmds.append(cmd[p])
+        stack.extend(children.get(p, []))
+    blob = " ".join(cmds)
+    for cls in adapters.available():
+        if cls.name in ATTACH_SUPPORTED and cls.binary and \
+                re.search(rf"(?:^|/){re.escape(cls.binary)}(?:\s|$)", blob):
+            return cls
+    return None
+
+
 def connect(name: str | None = None) -> int:
     """`agent2telegram connect` — wire ONE existing agent (a tmux session) to its OWN Telegram bot,
     as a separate bridge with its own config file. Lets you run several bots from one install
@@ -347,7 +389,13 @@ def connect(name: str | None = None) -> int:
             break
         print("Please enter a valid number.")
 
-    agent_cls = _choose_provider()
+    # We know the session — detect which agent runs in it instead of asking again.
+    agent_cls = _detect_agent_in_session(session)
+    if agent_cls:
+        print(f"\n  ✓ detected {agent_cls.label} running in '{session}'.")
+    else:
+        print(f"\n  (couldn't tell which agent is in '{session}')")
+        agent_cls = _choose_provider()
     token, me = _enter_token()
     owner = _capture_owner_id(token, me.get("username", "your_bot"))
 
