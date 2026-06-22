@@ -455,7 +455,7 @@ def set_elevenlabs(config: str | None = None) -> int:
     import os
     if config:
         os.environ["AGENT2TELEGRAM_CONFIG"] = config
-    from .config import load, save, config_path, ConfigError
+    from .config import load, save, ConfigError
     try:
         cfg = load()
     except ConfigError as e:
