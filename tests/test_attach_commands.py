@@ -41,6 +41,22 @@ class AttachCommandTests(unittest.TestCase):
         self.assertEqual(bridge._session.raw, ["/clear"])
         self.assertTrue(any("fresh" in text.lower() for _, text in bridge.tg.sent))
 
+    def test_reset_sends_unprefixed_new_to_codex(self):
+        bridge: Any = object.__new__(AttachBridge)
+        bridge.cfg = types.SimpleNamespace(
+            agent="codex",
+            tmux_session="meta - Master",
+            elevenlabs_api_key="",
+        )
+        bridge.tg = _FakeTelegram()
+        bridge._session = _FakeSession()
+
+        handled = bridge._handle_command("/reset", 123)
+
+        self.assertTrue(handled)
+        self.assertEqual(bridge._session.raw, ["/new"])
+        self.assertTrue(any("fresh" in text.lower() for _, text in bridge.tg.sent))
+
     def test_inject_raw_does_not_add_origin_prefix(self):
         session: Any = object.__new__(TmuxSession)
         session.name = "Claudia"

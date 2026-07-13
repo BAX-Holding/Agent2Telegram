@@ -556,18 +556,22 @@ class AttachBridge:
                 f"🎤 Voice (ElevenLabs): {voice}")
             return True
         if cmd == "reset":
-            if self.cfg.agent != "claude-code":
+            reset_command = {
+                "claude-code": "/clear",
+                "codex": "/new",
+            }.get(self.cfg.agent)
+            if reset_command is None:
                 self.tg.send_message(chat_id,
-                    "⚠️ `/reset` is currently supported only for Claude Code attach sessions.")
+                    f"⚠️ `/reset` is not supported for {agent} attach sessions.")
                 return True
             try:
-                self._session.inject_raw("/clear")
+                self._session.inject_raw(reset_command)
             except Exception as e:
                 log.error("reset failed: %s", e)
                 self.tg.send_message(chat_id, "❌ Could not start a fresh conversation.")
                 return True
             self.tg.send_message(chat_id,
-                "✅ Fresh Claude conversation started. Before using `/reset`, ask the agent to "
+                f"✅ Fresh {agent} conversation started. Before using `/reset`, ask the agent to "
                 "save a session summary if the topic should be preserved.")
             return True
         if cmd == "setkey":
