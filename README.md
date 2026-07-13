@@ -201,6 +201,17 @@ Enable it by setting your key (get one at <https://elevenlabs.io>):
 ```bash
 export ELEVENLABS_API_KEY="sk_..."     # or put "elevenlabs_api_key" in config.json
 ```
+
+Scribe predicts the language automatically by default. For short voice notes, an explicit
+ISO-639-1/3 hint can improve accuracy and prevent confusion between related languages:
+
+```json
+{
+  "elevenlabs_api_key": "sk_...",
+  "stt_language_code": "sk"
+}
+```
+
 Without a key, voice messages get a short "not enabled" notice. Images and files work with no
 extra setup.
 
