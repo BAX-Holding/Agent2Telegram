@@ -115,6 +115,19 @@ class TmuxSession:
             raise SessionError(f"agent session '{self.name}' is gone")
         self._send_keys(text)
 
+    def inject_raw(self, text: str) -> None:
+        """Inject a trusted TUI command without the Telegram origin prefix.
+
+        Intended only for bridge-owned commands such as Claude Code ``/clear``;
+        arbitrary Telegram messages must continue to use :meth:`inject`.
+        """
+        if not self.alive:
+            raise SessionError(f"agent session '{self.name}' is gone")
+        text = " ".join(text.splitlines())
+        _tmux("send-keys", "-t", self.name, "C-u"); time.sleep(0.05)
+        _tmux("send-keys", "-t", self.name, "-l", "--", text); time.sleep(0.15)
+        _tmux("send-keys", "-t", self.name, "Enter")
+
     def send(self, text: str) -> str:
         if not self.alive:
             raise SessionError(f"agent session '{self.name}' is gone")

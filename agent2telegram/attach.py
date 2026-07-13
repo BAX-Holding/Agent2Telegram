@@ -49,6 +49,7 @@ BOT_COMMANDS = [
     {"command": "start", "description": "Intro and what you can send"},
     {"command": "help", "description": "Intro and what you can send"},
     {"command": "status", "description": "Connection and voice status"},
+    {"command": "reset", "description": "Start a fresh agent conversation"},
     {"command": "setkey", "description": "Enable voice (your ElevenLabs API key)"},
     {"command": "id", "description": "Show your Telegram id"},
 ]
@@ -543,7 +544,7 @@ class AttachBridge:
                 "progress, what tools it runs, and the reply. You can also send *photos* and "
                 "*files*, and react with ❤️ as quick feedback.\n\n"
                 f"🎤 Voice transcription: {voice}.\n\n"
-                "Commands: /help · /status · /id · /setkey")
+                "Commands: /help · /status · /reset · /id · /setkey")
             return True
         if cmd == "id":
             self.tg.send_message(chat_id, f"Your Telegram id: `{chat_id}`")
@@ -553,6 +554,21 @@ class AttachBridge:
             self.tg.send_message(chat_id,
                 f"✅ Connected — *{agent}* in tmux session `{self.cfg.tmux_session}`.\n"
                 f"🎤 Voice (ElevenLabs): {voice}")
+            return True
+        if cmd == "reset":
+            if self.cfg.agent != "claude-code":
+                self.tg.send_message(chat_id,
+                    "⚠️ `/reset` is currently supported only for Claude Code attach sessions.")
+                return True
+            try:
+                self._session.inject_raw("/clear")
+            except Exception as e:
+                log.error("reset failed: %s", e)
+                self.tg.send_message(chat_id, "❌ Could not start a fresh conversation.")
+                return True
+            self.tg.send_message(chat_id,
+                "✅ Fresh Claude conversation started. Before using `/reset`, ask the agent to "
+                "save a session summary if the topic should be preserved.")
             return True
         if cmd == "setkey":
             return self._set_voice_key(arg, chat_id, message_id)
