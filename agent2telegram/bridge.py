@@ -206,7 +206,12 @@ class Bridge:
         try:
             file_path = self.tg.get_file_path(file_id)
             audio = self.tg.download(file_path)
-            return stt.transcribe(audio, api_key=self._stt_key, filename=Path(file_path).name or "voice.ogg")
+            return stt.transcribe(
+                audio,
+                api_key=self._stt_key,
+                filename=Path(file_path).name or "voice.ogg",
+                language_code=self.cfg.stt_language_code,
+            )
         except Exception as e:
             log.error("voice transcription failed: %s", e)
             self.tg.send_message(chat_id, f"⚠️ Couldn't transcribe the voice message: {e}")

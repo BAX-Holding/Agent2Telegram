@@ -35,6 +35,7 @@ class Config:
     agent_timeout: int = 600            # seconds before a single agent run is killed
     poll_timeout: int = 50              # long-poll timeout for getUpdates
     elevenlabs_api_key: str = ""        # optional: enables voice-message transcription (STT)
+    stt_language_code: str = ""          # optional ISO-639-1/3 hint, e.g. "sk"
     # ---- persistent "attach" mode (drive an existing live agent session) ----
     mode: str = "oneshot"               # "oneshot" | "attach"
     tmux_session: str = ""              # name of the existing tmux session to drive

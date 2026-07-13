@@ -884,8 +884,12 @@ class AttachBridge:
         try:
             fp = self.tg.get_file_path(media["file_id"])
             audio = self.tg.download(fp)
-            return stt.transcribe(audio, api_key=self.cfg.elevenlabs_api_key,
-                                  filename=Path(fp).name or "voice.ogg")
+            return stt.transcribe(
+                audio,
+                api_key=self.cfg.elevenlabs_api_key,
+                filename=Path(fp).name or "voice.ogg",
+                language_code=self.cfg.stt_language_code,
+            )
         except Exception as e:
             log.error("transcription failed: %s", e)
             self.tg.send_message(chat_id, f"⚠️ Couldn't transcribe: {e}")

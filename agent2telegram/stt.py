@@ -40,11 +40,15 @@ def _multipart(fields: dict[str, str], filename: str, audio: bytes,
 
 
 def transcribe_elevenlabs(audio: bytes, *, api_key: str, filename: str = "voice.ogg",
-                          opener=None, timeout: float = 120) -> str:
+                          language_code: str = "", opener=None,
+                          timeout: float = 120) -> str:
     """Transcribe *audio* bytes with ElevenLabs Scribe. Returns the recognized text."""
     if not api_key:
         raise STTError("no ElevenLabs API key configured")
-    boundary, body = _multipart({"model_id": MODEL_ID}, filename, audio)
+    fields = {"model_id": MODEL_ID}
+    if language_code:
+        fields["language_code"] = language_code
+    boundary, body = _multipart(fields, filename, audio)
     req = urllib.request.Request(
         ELEVENLABS_URL,
         data=body,
@@ -67,6 +71,9 @@ def transcribe_elevenlabs(audio: bytes, *, api_key: str, filename: str = "voice.
     return text
 
 
-def transcribe(audio: bytes, *, api_key: str, filename: str = "voice.ogg") -> str:
+def transcribe(audio: bytes, *, api_key: str, filename: str = "voice.ogg",
+               language_code: str = "") -> str:
     """Provider dispatcher (only ElevenLabs Scribe today)."""
-    return transcribe_elevenlabs(audio, api_key=api_key, filename=filename)
+    return transcribe_elevenlabs(
+        audio, api_key=api_key, filename=filename, language_code=language_code
+    )

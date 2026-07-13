@@ -118,16 +118,24 @@ class VoiceTests(BridgeTestBase):
         self.assertIsNone(task)
         self.assertTrue(any("aren't enabled" in t for t in self.sent_texts()))
 
-    def test_voice_with_key_is_transcribed(self):
+    def test_voice_with_key_is_transcribed_with_configured_language(self):
         self.bridge._stt_key = "fake-key"
+        self.bridge.cfg.stt_language_code = "sk"
+        received = {}
         orig = stt.transcribe
-        stt.transcribe = lambda audio, **kw: "hello from voice"
+
+        def fake_transcribe(audio, **kwargs):
+            received.update(kwargs)
+            return "hello from voice"
+
+        stt.transcribe = fake_transcribe
         try:
             task = self.bridge._build_task(100, {"voice": {"file_id": "v1"}}, "")
         finally:
             stt.transcribe = orig
         self.assertIsNotNone(task)
         self.assertEqual(task.text, "hello from voice")
+        self.assertEqual(received["language_code"], "sk")
 
 
 if __name__ == "__main__":

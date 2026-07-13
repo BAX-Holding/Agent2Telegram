@@ -17,12 +17,16 @@ class ConfigTests(unittest.TestCase):
         self.dir.cleanup()
         os.environ.pop("TELEGRAM_BOT_TOKEN", None)
 
-    def test_roundtrip(self):
-        cfg = Config(agent="codex", token="123:secret", allowed_user_ids=[7])
+    def test_roundtrip_preserves_stt_language_code(self):
+        cfg = Config(
+            agent="codex", token="123:secret", allowed_user_ids=[7],
+            stt_language_code="sk",
+        )
         save(cfg, self.path)
         loaded = load(self.path)
         self.assertEqual(loaded.agent, "codex")
         self.assertEqual(loaded.allowed_user_ids, [7])
+        self.assertEqual(loaded.stt_language_code, "sk")
 
     def test_saved_file_is_0600(self):
         save(Config(agent="codex", token="1:2", allowed_user_ids=[1]), self.path)

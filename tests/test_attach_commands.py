@@ -69,6 +69,26 @@ class AttachCommandTests(unittest.TestCase):
         self.assertEqual(len(literal_calls), 1)
         self.assertEqual(literal_calls[0].args[-1], "/clear")
 
+    def test_voice_transcription_passes_configured_language_code(self):
+        bridge: Any = object.__new__(AttachBridge)
+        bridge.cfg = types.SimpleNamespace(
+            elevenlabs_api_key="key",
+            stt_language_code="sk",
+        )
+        bridge.tg = types.SimpleNamespace(
+            get_file_path=lambda _file_id: "voice.ogg",
+            download=lambda _path: b"audio",
+            send_message=lambda *_args, **_kwargs: None,
+        )
+
+        with patch("agent2telegram.stt.transcribe", return_value="ahoj") as transcribe:
+            out = bridge._transcribe({"file_id": "telegram-file"}, 123)
+
+        self.assertEqual(out, "ahoj")
+        transcribe.assert_called_once_with(
+            b"audio", api_key="key", filename="voice.ogg", language_code="sk"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

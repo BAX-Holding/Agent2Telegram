@@ -38,6 +38,15 @@ class STTTests(unittest.TestCase):
         self.assertIn(b'name="file"', body)
         self.assertIn(b"audio", body)
 
+    def test_sends_configured_language_code_in_multipart(self):
+        op = _FakeOpener({"text": "ahoj"})
+        stt.transcribe_elevenlabs(
+            b"audio", api_key="k", language_code="sk", opener=op
+        )
+        body = op.last_request.data
+        self.assertIn(b'name="language_code"', body)
+        self.assertIn(b"\r\n\r\nsk\r\n", body)
+
     def test_sends_api_key_header(self):
         op = _FakeOpener({"text": "x"})
         stt.transcribe_elevenlabs(b"audio", api_key="secret-key", opener=op)
