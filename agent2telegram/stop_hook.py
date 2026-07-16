@@ -68,6 +68,10 @@ def main() -> None:
     path = payload.get("transcript_path")
     if not path:
         return
+    # A global Claude Stop hook runs for background workers too. Their transcripts live below the
+    # parent session's subagents directory and must never end the bridge's parent Telegram turn.
+    if "subagents" in Path(path).parts:
+        return
     base = os.path.basename(path)
 
     cfgs = [c for c in _all_cfgs() if c.get("signal_file")]

@@ -90,6 +90,11 @@ class ClaudeCodeReader:
     name = "claude-code"
     emits_turn_end = False
 
+    @staticmethod
+    def _is_internal_continuation(text: str) -> bool:
+        """Claude background-agent completions resume the parent without a new human message."""
+        return text.lstrip().startswith("<task-notification>")
+
     def user_text(self, rec: dict) -> str | None:
         if rec.get("type") != "user":
             return None
@@ -100,7 +105,10 @@ class ClaudeCodeReader:
         if typ == "user":
             t = _text_of(rec.get("message", {}).get("content"))
             if t.strip():
-                yield Ev("user", text=t)
+                if self._is_internal_continuation(t):
+                    yield Ev("continuation")
+                else:
+                    yield Ev("user", text=t)
             return
         if typ != "assistant":
             return

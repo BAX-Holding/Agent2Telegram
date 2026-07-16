@@ -257,12 +257,15 @@ class AttachBridge:
             return self._newest_under(base) if not cwd else None
         best, best_m = None, -1.0
         for d in dirs:
-            p = self._newest_under(d, "*.jsonl")
-            try:
-                if p and p.stat().st_mtime > best_m:
-                    best, best_m = p, p.stat().st_mtime
-            except OSError:
-                pass
+            # Parent sessions are direct children of the per-cwd project directory. Recursive
+            # discovery also sees <session>/subagents/agent-*.jsonl and used to make the bridge
+            # jump between worker transcripts, losing the parent's final answer.
+            for p in d.glob("*.jsonl"):
+                try:
+                    if p.stat().st_mtime > best_m:
+                        best, best_m = p, p.stat().st_mtime
+                except OSError:
+                    pass
         return best
 
     def _maybe_reresolve(self) -> None:
@@ -343,7 +346,11 @@ class AttachBridge:
                 continue
             utext = self._reader.user_text(rec)
             if utext and utext.strip():
-                from_tg = utext.lstrip().startswith(self._origins)
+                is_continuation = getattr(
+                    self._reader, "_is_internal_continuation", lambda _text: False
+                )(utext)
+                if not is_continuation:
+                    from_tg = utext.lstrip().startswith(self._origins)
                 last_user_end = min(line_end, size)
         if last_user_end is not None:
             self._tpos = last_user_end
@@ -852,6 +859,14 @@ class AttachBridge:
             return
         if ev.kind == "turn_start":
             return                              # inbound already lit typing; nothing else to do
+        if ev.kind == "continuation":
+            # Claude Code background agents report back as internal <task-notification> user
+            # records. They continue the originating Telegram request; they must not reset its
+            # routing lineage merely because the first parent assistant turn already stopped.
+            if self._turn_from_tg:
+                self._turn_active.set()
+                self._last_activity = time.monotonic()
+            return
         if ev.kind == "turn_end":
             self._pending_turn_end = True       # outbound loop finishes the turn after this drain
             return
