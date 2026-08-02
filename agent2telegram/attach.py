@@ -688,7 +688,12 @@ class AttachBridge:
         # or interim forwarding missed it), deliver the final assistant message now. The
         # `_turn_text_sent` guard means this only fires when truly nothing was sent (no double-send),
         # and _send_final sets it True so a second _finish_turn won't re-fire.
-        if was_active and self._turn_from_tg and not self._turn_text_sent and self._owner_chat is not None:
+        # Readers with an explicit turn_end (Codex task_complete) have already drained every
+        # current-turn agent_message before reaching here.  Tail-scanning their whole transcript is
+        # both unnecessary and unsafe: a failed turn with no agent_message would reuse history.
+        needs_tail_backstop = not getattr(self._reader, "emits_turn_end", False)
+        if (was_active and needs_tail_backstop and self._turn_from_tg
+                and not self._turn_text_sent and self._owner_chat is not None):
             last = self._last_assistant_text()
             out = self._strip_marker(last) if last else ""
             if out:
