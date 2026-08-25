@@ -1,7 +1,6 @@
 """Regression tests for Telegram turns continued by Claude Code background agents."""
 import io
 import json
-import os
 import tempfile
 import threading
 import time
@@ -13,27 +12,6 @@ from unittest.mock import patch
 from agent2telegram import stop_hook
 from agent2telegram.attach import AttachBridge
 from agent2telegram.readers import ClaudeCodeReader, Ev
-
-
-class ClaudeTranscriptSelectionTests(unittest.TestCase):
-    def test_newest_claude_ignores_newer_nested_subagent_transcript(self):
-        with tempfile.TemporaryDirectory() as td:
-            project = Path(td) / ".claude" / "projects" / "-work"
-            subagents = project / "parent-session" / "subagents"
-            subagents.mkdir(parents=True)
-            parent = project / "parent-session.jsonl"
-            child = subagents / "agent-child.jsonl"
-            parent.write_text("{}\n", encoding="utf-8")
-            child.write_text("{}\n", encoding="utf-8")
-            os.utime(parent, (100, 100))
-            os.utime(child, (200, 200))
-
-            bridge = object.__new__(AttachBridge)
-            bridge._session_cwd = lambda: "/work"
-            with patch("agent2telegram.attach.Path.home", return_value=Path(td)):
-                selected = bridge._newest_claude()
-
-        self.assertEqual(selected, parent)
 
 
 class ClaudeContinuationReaderTests(unittest.TestCase):

@@ -69,6 +69,32 @@ class AttachCommandTests(unittest.TestCase):
         self.assertEqual(len(literal_calls), 1)
         self.assertEqual(literal_calls[0].args[-1], "/clear")
 
+    def test_inject_raw_uses_pane_guard_and_sanitizes_control_characters(self):
+        session: Any = object.__new__(TmuxSession)
+        session.name = "Claudia"
+        session._origin = "[TG] "
+        session._expected_agent_commands = ("claude",)
+        with patch.object(TmuxSession, "alive", new_callable=PropertyMock, return_value=True), \
+             patch.object(TmuxSession, "_pane_ok", return_value=(True, "claude")) as pane_ok, \
+             patch("agent2telegram.session._tmux") as tmux:
+            session.inject_raw("/clear\x1b\nignored")
+
+        pane_ok.assert_called_once_with()
+        literal_calls = [c for c in tmux.call_args_list if "-l" in c.args]
+        self.assertEqual(literal_calls[0].args[-1], "/clear ignored")
+
+    def test_inject_raw_fails_closed_for_wrong_pane(self):
+        session: Any = object.__new__(TmuxSession)
+        session.name = "Claudia"
+        session._origin = "[TG] "
+        with patch.object(TmuxSession, "alive", new_callable=PropertyMock, return_value=True), \
+             patch.object(TmuxSession, "_pane_ok", return_value=(False, "shell prompt")), \
+             patch("agent2telegram.session._tmux") as tmux:
+            with self.assertRaisesRegex(Exception, "refusing to inject"):
+                session.inject_raw("/clear")
+
+        tmux.assert_not_called()
+
     def test_voice_transcription_passes_configured_language_code(self):
         bridge: Any = object.__new__(AttachBridge)
         bridge.cfg = types.SimpleNamespace(
