@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from agent2telegram import attach as attach_mod
 from agent2telegram import stt
@@ -467,9 +468,9 @@ class ReactionDedupTests(unittest.TestCase):
         b._turn_active = threading.Event()
         return b
 
-    def _upd(self, uid, emoji="❤️", msg_id=20800, chat=1):
+    def _upd(self, uid, emoji="❤️", msg_id=20800, chat=1, user=7):
         return {"update_id": uid, "message_reaction": {
-            "user": {"id": 7}, "chat": {"id": chat}, "message_id": msg_id,
+            "user": {"id": user}, "chat": {"id": chat}, "message_id": msg_id,
             "new_reaction": [{"type": "emoji", "emoji": emoji}]}}
 
     def test_sestkrat_stejna_reakce_je_jedna_odpoved(self):
@@ -477,6 +478,17 @@ class ReactionDedupTests(unittest.TestCase):
         for uid in range(36303177, 36303183):
             b._handle(self._upd(uid))
         self.assertEqual(len(b._injected), 1, f"agent dostal {len(b._injected)} pobídek místo jedné")
+
+    def test_neuspesny_inject_neotravuje_retry_dedup_cache(self):
+        b = self._postav()
+        vysledky = iter((False, True))
+        b._inject = lambda text: (b._injected.append(text), next(vysledky))[1]
+
+        self.assertFalse(b._handle(self._upd(1)))
+        self.assertTrue(b._handle(self._upd(1)))
+
+        self.assertEqual(len(b._injected), 2,
+                         "durable retry musí po neúspěšném injectu zkusit reakci znovu")
 
     def test_jina_zprava_projde(self):
         b = self._postav()
@@ -490,6 +502,31 @@ class ReactionDedupTests(unittest.TestCase):
         b._handle(self._upd(2, emoji="👍"))
         self.assertEqual(len(b._injected), 2, "jiné emoji je jiná zpětná vazba")
 
+    def test_odstraneni_a_znovupridani_reakce_projde(self):
+        b = self._postav()
+        pridani = self._upd(1)
+        odstraneni = self._upd(2)
+        mr = odstraneni["message_reaction"]
+        mr["old_reaction"] = mr.pop("new_reaction")
+        mr["new_reaction"] = []
+
+        b._handle(pridani)
+        b._handle(odstraneni)
+        b._handle(self._upd(3))
+
+        self.assertEqual(len(b._injected), 2,
+                         "po odstranění musí nové přidání stejné reakce projít")
+
+    def test_dva_opravneni_uzivatele_nejsou_duplicitni(self):
+        b = self._postav()
+        b._allowed = {7, 8}
+
+        b._handle(self._upd(1, user=7))
+        b._handle(self._upd(2, user=8))
+
+        self.assertEqual(len(b._injected), 2,
+                         "reakce druhého oprávněného uživatele je samostatná zpětná vazba")
+
     def test_po_uplynuti_okna_projde_znovu(self):
         b = self._postav()
         b._handle(self._upd(1))
@@ -497,6 +534,14 @@ class ReactionDedupTests(unittest.TestCase):
         b._reaction_seen[klic] -= attach_mod.REACTION_DEDUP_S + 1
         b._handle(self._upd(2))
         self.assertEqual(len(b._injected), 2, "po vypršení okna má reakce projít")
+
+    def test_okno_pouziva_monotonni_cas(self):
+        b = self._postav()
+        with mock.patch.object(attach_mod.time, "monotonic", side_effect=(1000.0, 1061.0)):
+            b._handle(self._upd(1))
+            b._handle(self._upd(2))
+        self.assertEqual(len(b._injected), 2,
+                         "dedup okno se musí řídit monotónním časem")
 
     def test_pamet_neroste_donekonecna(self):
         b = self._postav()
