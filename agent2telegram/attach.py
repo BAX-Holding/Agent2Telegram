@@ -1093,33 +1093,34 @@ class AttachBridge:
         # Reactions (e.g. ❤️) → quick-feedback line.
         mr = upd.get("message_reaction")
         if mr:
-            if mr.get("user", {}).get("id") not in self._allowed:
+            actor_id = mr.get("user", {}).get("id")
+            if actor_id not in self._allowed:
                 return True
             emojis = "".join(r.get("emoji", "") for r in mr.get("new_reaction", [])
                              if r.get("type") == "emoji")
+            old_emojis = "".join(r.get("emoji", "") for r in mr.get("old_reaction", [])
+                                 if r.get("type") == "emoji")
+            # Focused tests and older callers may construct an instance without __init__.
+            if getattr(self, "_reaction_seen", None) is None:
+                self._reaction_seen = {}
+            if old_emojis and old_emojis != emojis:
+                old_key = (mr.get("chat", {}).get("id"), mr.get("message_id"), actor_id,
+                           old_emojis)
+                self._reaction_seen.pop(old_key, None)
             if emojis:
                 # Telegram can emit the SAME reaction several times in a row: on 2026-08-26 one
                 # ❤️ arrived as six separate updates within 13 seconds (update_id 36303177-182),
                 # so the agent was asked for a one-line answer six times and the user got a
                 # burst of cat emojis. The reaction itself is identified by chat + message +
-                # emoji, so a repeat of that triple inside a short window is a duplicate, never
-                # a second opinion. This is identity matching, not guessing from content.
-                key = (mr.get("chat", {}).get("id"), mr.get("message_id"), emojis)
-                now = time.time()
-                # Most kdysi stavěl instance i bez __init__ (testy, starší kód), takže na
-                # existenci atributu se nedá spolehnout – založit ho líně.
-                if getattr(self, "_reaction_seen", None) is None:
-                    self._reaction_seen = {}
+                # actor + emoji, so a repeat of that identity inside a short window is a duplicate,
+                # never a second opinion. This is identity matching, not guessing from content.
+                key = (mr.get("chat", {}).get("id"), mr.get("message_id"), actor_id, emojis)
+                now = time.monotonic()
                 seen = self._reaction_seen.get(key)
                 if seen is not None and now - seen < REACTION_DEDUP_S:
                     log.info("reaction %s on #%s ignored as a duplicate (%.1fs after the first)",
                              emojis, mr.get("message_id"), now - seen)
                     return True
-                self._reaction_seen[key] = now
-                if len(self._reaction_seen) > 512:      # drobná pojistka proti růstu
-                    for k in sorted(self._reaction_seen, key=self._reaction_seen.get)[:256]:
-                        self._reaction_seen.pop(k, None)
-
                 # A reaction DOES deserve an answer, but a one-liner — being left on read feels
                 # like the bridge swallowed it. The prompt therefore asks for a very short reply.
                 #
@@ -1134,10 +1135,17 @@ class AttachBridge:
                 self._begin_turn()
                 if not turn_running:
                     self._turn_is_reaction = True
-                return self._inject(
+                delivered = self._inject(
                     f"{emojis} reacted {emojis} to your message #{mr.get('message_id')} "
                     f"— quick feedback. Always answer, but with ONE very short line "
                     f"(a few words or an emoji), nothing more.")
+                if delivered is not False:
+                    # Do not poison durable retry: a failed tmux write must remain eligible.
+                    self._reaction_seen[key] = now
+                    if len(self._reaction_seen) > 512:  # bounded memory
+                        for k in sorted(self._reaction_seen, key=self._reaction_seen.get)[:256]:
+                            self._reaction_seen.pop(k, None)
+                return delivered
             return True
 
         msg = upd.get("message") or upd.get("edited_message")
