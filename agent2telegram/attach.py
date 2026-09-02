@@ -45,6 +45,11 @@ log = logging.getLogger("agent2telegram.attach")
 #: the Stop-hook turn-end marker never arrives. The marker is the primary, precise signal —
 #: this just stops "typing…" from hanging forever if the hook is missing/misconfigured.
 IDLE_DONE = 90.0
+# With a Stop hook wired (Claude Code), the hook is the authoritative end of turn and silence is
+# only a safety net. 90 s of transcript silence is NORMAL for a long-thinking model: on
+# 2026-09-02 22:23 the bridge closed a live turn after 90 s of thinking, the answer landed two
+# minutes later with no turn open and was dropped. Ten minutes leaves room to think.
+IDLE_DONE_HOOKED = 600.0
 # A write to tmux can fail transiently (busy pane, full buffer), so it is retried.
 # A short pause on purpose: a user's message must not wait longer than the user's patience.
 INJECT_ATTEMPTS = 3
@@ -1249,6 +1254,11 @@ class AttachBridge:
         self._last_typing = now
         self._turn_text_sent = False             # gate TUI bubbles until intro text lands
         self._turn_is_reaction = False           # set by the reaction branch right after this
+        # Where the transcript stood when this turn began. The backstop scans only from here:
+        # anything before it belongs to an earlier turn and must never be re-sent as this turn's
+        # answer (2026-09-02 22:19: the backstop "forwarded" the 21:39 reply, the dedup ledger
+        # dropped it, and the log still claimed the turn was answered).
+        self._turn_tpos = getattr(self, "_tpos", 0)
         # Clear any end-of-turn signal left over from the PREVIOUS turn. Codex writes
         # task_complete to the rollout with a delay, so a late one could land after the next
         # turn had already started and end it within ~1 s — the reply was then never sent and
@@ -1541,12 +1551,13 @@ class AttachBridge:
         try:
             size = self._transcript.stat().st_size
             with open(self._transcript, "rb") as f:
-                f.seek(max(0, size - 2_000_000))
+                f.seek(max(0, size - 2_000_000, int(getattr(self, "_turn_tpos", 0) or 0)))
                 tail = f.read()
         except OSError:
             return None
         last = None
         last_key = None                              # transcript with no assistant text at all
+        sent = getattr(self, "_sent_keys", set())
         for raw in tail.split(b"\n"):
             line = raw.strip()
             if not line:
@@ -1558,6 +1569,8 @@ class AttachBridge:
             try:
                 for ev in self._reader.parse(rec):
                     if ev.kind == "text" and ev.text and ev.text.strip():
+                        if ev.key and ev.key in sent:
+                            continue                 # already delivered → not this turn's answer
                         last = ev.text
                         last_key = ev.key            # dedup id of that very message
             except Exception:
@@ -1701,14 +1714,14 @@ class AttachBridge:
                     self._finish_turn()
                 elif self._turn_end is not None and self._turn_end.exists():
                     self._end_turn()
-                elif self._turn_active.is_set() and time.monotonic() - self._last_activity > IDLE_DONE:
+                elif self._turn_active.is_set() and time.monotonic() - self._last_activity > self._idle_limit():
                     # This branch used to just close the turn: the backstop didn't run, so the
                     # reply wasn't sent and not even a log line was left. It was one of three ways
                     # messages vanished without a trace (audit finding C). Turn end now goes
                     # through one shared path regardless of what triggered it; the warning
                     # distinguishes "ended in silence" from "the hook reported it".
                     log.warning("konec turnu podle ticha (%.0f s bez aktivity), hook se neozval",
-                                IDLE_DONE)
+                                self._idle_limit())
                     self._end_turn()
                 # Live retry: messages that failed to deliver are retried while running too.
                 # Replay only at startup meant, for a long-running service, waiting forever.
@@ -1719,6 +1732,11 @@ class AttachBridge:
             except Exception as e:
                 log.error("outbound error: %s", e)
             self._stop.wait(OUTBOUND_TICK)
+
+    def _idle_limit(self) -> float:
+        """Seconds of transcript silence after which a turn is force-ended. Long when a Stop hook
+        marker is configured (the hook ends turns; silence is only the fallback), short otherwise."""
+        return IDLE_DONE_HOOKED if getattr(self, "_turn_end", None) is not None else IDLE_DONE
 
     def _beat(self) -> None:
         """Touch the outbound heartbeat — proof the forward loop completed a cycle without blocking.
@@ -1924,6 +1942,15 @@ class AttachBridge:
         self._pending_files = []
         self._send_files(files)
 
+    def _has_marker(self, text: str) -> bool:
+        """True when the FIRST non-blank line starts with the progress marker (case-insensitive)."""
+        marker = self._marker.lower()
+        for ln in text.splitlines():
+            s = ln.strip()
+            if s:
+                return s.lower().startswith(marker)
+        return False
+
     def _strip_marker(self, text: str) -> str:
         """Remove the progress marker (e.g. ``[TG]``) from the start of *any* line. It's a routing
         token, never content — so a stray one mid-message (narration before the marked reply) must
@@ -1960,8 +1987,19 @@ class AttachBridge:
         if ev.kind == "turn_end":
             self._pending_turn_end = True       # outbound loop finishes the turn after this drain
             return
-        if not self._turn_from_tg or self._owner_chat is None:
+        if self._owner_chat is None:
             return
+        if not self._turn_from_tg:
+            # A text that carries the routing marker is addressed to Telegram no matter what the
+            # turn bookkeeping says: the flag is reconstructed from transcript records and has
+            # been wrong before (a harness record with no prefix reset it on 2026-09-02 while the
+            # answer to "?" was still being written; the answer then vanished silently).
+            if ev.kind == "text" and self._has_marker(ev.text):
+                log.info("text carries %s outside a Telegram turn → forwarded anyway", self._marker)
+            else:
+                if ev.kind == "text" and ev.text.strip() and ev.key not in self._sent_keys:
+                    log.info("text NOT forwarded (turn not from Telegram) %r", ev.text[:40])
+                return
         if ev.kind == "text":
             out = self._strip_marker(ev.text)
             if out and ev.key not in self._sent_keys:
