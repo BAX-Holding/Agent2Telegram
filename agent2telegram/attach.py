@@ -109,6 +109,7 @@ BOT_COMMANDS = [
     {"command": "start", "description": "Intro and what you can send"},
     {"command": "help", "description": "Intro and what you can send"},
     {"command": "status", "description": "Connection and voice status"},
+    {"command": "reset", "description": "Start a fresh agent conversation"},
     {"command": "setkey", "description": "Enable voice (your ElevenLabs API key)"},
     {"command": "voice", "description": "Toggle spoken (voice-note) replies"},
     {"command": "id", "description": "Show your Telegram id"},
@@ -1370,7 +1371,7 @@ class AttachBridge:
                 "progress, what tools it runs, and the reply. You can also send *photos* and "
                 "*files*, and react with ❤️ as quick feedback.\n\n"
                 f"🎤 Voice transcription: {voice}.\n\n"
-                "Commands: /help · /status · /id · /setkey · /voice")
+                "Commands: /help · /status · /reset · /id · /setkey · /voice")
             return True
         if cmd == "id":
             self.tg.send_message(chat_id, f"Your Telegram id: `{chat_id}`")
@@ -1382,6 +1383,23 @@ class AttachBridge:
                 f"✅ Connected — *{agent}* in tmux session `{self.cfg.tmux_session}`.\n"
                 f"🎤 Voice transcription (ElevenLabs): {voice}\n"
                 f"🗣️ Voice replies (/voice): {replies}")
+            return True
+        if cmd == "reset":
+            reset_command = {"claude-code": "/clear", "codex": "/new"}.get(self.cfg.agent)
+            if reset_command is None:
+                self.tg.send_message(chat_id, f"⚠️ `/reset` is not supported for {agent} attach sessions.")
+                return True
+            try:
+                self._session.inject_raw(reset_command)
+            except Exception as e:
+                log.error("reset failed: %s", e)
+                self.tg.send_message(chat_id, "❌ Could not start a fresh conversation.")
+                return True
+            self.tg.send_message(
+                chat_id,
+                f"✅ Fresh {agent} conversation started. Before using `/reset`, ask the agent to "
+                "save a session summary if the topic should be preserved.",
+            )
             return True
         if cmd == "setkey":
             return self._set_voice_key(arg, chat_id, message_id)
