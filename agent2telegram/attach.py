@@ -1641,7 +1641,10 @@ class AttachBridge:
         # or interim forwarding missed it), deliver the final assistant message now. The
         # `_turn_text_sent` guard means this only fires when truly nothing was sent (no double-send),
         # and _send_final sets it True so a second _finish_turn won't re-fire.
-        if (was_active and self._turn_from_tg and not self._turn_text_sent
+        # An explicit turn_end means the reader already drained the whole current turn. Tail-scanning
+        # after it can only recover history, so a failed Codex turn must not reuse an older answer.
+        needs_tail_backstop = not getattr(getattr(self, "_reader", None), "emits_turn_end", False)
+        if (was_active and needs_tail_backstop and self._turn_from_tg and not self._turn_text_sent
                 and not getattr(self, "_turn_is_reaction", False)
                 and self._owner_chat is not None
                 and getattr(self, "_turn_end_backstop_enabled", True)):
@@ -1669,7 +1672,7 @@ class AttachBridge:
                           "signal_configured=%s",
                           dur, self._typing_count, getattr(self, "_transcript", None) is not None,
                           getattr(self, "_signal", None) is not None)
-        elif (was_active and self._turn_from_tg and not self._turn_text_sent
+        elif (was_active and needs_tail_backstop and self._turn_from_tg and not self._turn_text_sent
                 and self._owner_chat is not None
                 and not getattr(self, "_turn_is_reaction", False)):
             # Should be unreachable — the branch above covers it. Kept because on 2026-08-23 a
