@@ -461,10 +461,11 @@ class AttachBridge:
 
         Agents write the transcript on the first message (not at launch), and a session restart
         starts a new one — so we re-check periodically. We switch when a better match appears, but
-        never abandon a transcript we're already on for an in-flight turn. A no-op when the config
-        gives an explicit transcript path (the path resolves to itself)."""
-        if (self.cfg.transcript_path or "").strip().lower() not in ("", "auto"):
-            return                                # explicit path → nothing to re-resolve
+        never abandon a transcript we're already on for an in-flight turn. Auto mode and an explicit
+        transcript directory are re-resolved; an explicit transcript file remains pinned."""
+        tp = (self.cfg.transcript_path or "").strip()
+        if tp and tp.lower() != "auto" and not Path(tp).expanduser().is_dir():
+            return                                # explicit file → nothing to re-resolve
         now = time.monotonic()
         if now - self._last_resolve < 3.0:
             return
