@@ -116,6 +116,11 @@ class ClaudeCodeReader:
     emits_turn_end = False
 
     @staticmethod
+    def _is_internal_continuation(text: str) -> bool:
+        """Return whether Claude is resuming a parent turn with a background-agent result."""
+        return text.lstrip().startswith("<task-notification>")
+
+    @staticmethod
     def _is_tool_result(rec: dict) -> bool:
         """A ``user`` record that is really a TOOL RESULT, not something the person typed.
 
@@ -145,7 +150,10 @@ class ClaudeCodeReader:
                 return                      # a tool result is not something the person typed
             t = _text_of(rec.get("message", {}).get("content"))
             if t.strip():
-                yield Ev("user", text=t)
+                if self._is_internal_continuation(t):
+                    yield Ev("continuation")
+                else:
+                    yield Ev("user", text=t)
             return
         if typ != "assistant":
             return
