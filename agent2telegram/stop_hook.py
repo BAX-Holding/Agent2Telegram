@@ -68,6 +68,10 @@ def main() -> None:
     path = payload.get("transcript_path")
     if not path:
         return
+    # A global Stop hook also runs for background workers. Their completion must not end the
+    # parent Telegram turn; the parent resumes when the task-notification reaches its transcript.
+    if "subagents" in Path(path).parts:
+        return
     base = os.path.basename(path)
 
     cfgs = [c for c in _all_cfgs() if c.get("signal_file")]
