@@ -610,7 +610,11 @@ class AttachBridge:
                 continue
             utext = self._reader.user_text(rec)
             if utext and utext.strip():
-                from_tg = utext.lstrip().startswith(self._origins)
+                is_continuation = getattr(
+                    self._reader, "_is_internal_continuation", lambda _text: False
+                )(utext)
+                if not is_continuation:
+                    from_tg = utext.lstrip().startswith(self._origins)
                 last_user_end = min(line_end, size)
         if last_user_end is not None:
             self._tpos = last_user_end
@@ -2115,6 +2119,11 @@ class AttachBridge:
             if not self._turn_active.is_set():
                 self._turn_from_tg = False
             return                              # local TUI turns do not make Telegram inbound busy
+        if ev.kind == "continuation":
+            if self._turn_from_tg:
+                self._turn_active.set()
+                self._last_activity = time.monotonic()
+            return
         if ev.kind == "turn_end":
             self._pending_turn_end = True       # outbound loop finishes the turn after this drain
             return
