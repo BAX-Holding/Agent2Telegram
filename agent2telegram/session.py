@@ -295,6 +295,19 @@ class TmuxSession:
             raise SessionError(f"agent session '{self.name}' is gone")
         self._send_keys(text)
 
+    def inject_raw(self, text: str) -> None:
+        """Inject a trusted bridge-owned TUI command without the Telegram origin prefix."""
+        if not self.alive:
+            raise SessionError(f"agent session '{self.name}' is gone")
+        ok, detail = self._pane_ok()
+        if not ok:
+            log.warning("refusing raw tmux injection into '%s': %s", self.name, detail)
+            raise SessionError(f"refusing to inject into tmux session '{self.name}': {detail}")
+        text = " ".join(sanitize_for_tmux(text).splitlines())
+        _tmux("send-keys", "-t", self.name, "C-u"); time.sleep(0.05)
+        _tmux("send-keys", "-t", self.name, "-l", "--", text); time.sleep(0.15)
+        _tmux("send-keys", "-t", self.name, "Enter")
+
     def send(self, text: str) -> str:
         if not self.alive:
             raise SessionError(f"agent session '{self.name}' is gone")
