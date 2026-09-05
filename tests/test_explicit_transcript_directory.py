@@ -35,8 +35,8 @@ class ExplicitTranscriptDirectoryTests(unittest.TestCase):
             os.utime(new, (newer, newer))
             bridge._maybe_reresolve()
             self.assertEqual(new, bridge._transcript)
-            self.assertEqual(0, bridge._tpos)
-            self.assertEqual(0, bridge._turn_tpos)
+            self.assertEqual(new.stat().st_size, bridge._tpos)
+            self.assertEqual(new.stat().st_size, bridge._turn_tpos)
 
     def test_keeps_explicit_transcript_file_pinned(self):
         with tempfile.TemporaryDirectory() as td:
